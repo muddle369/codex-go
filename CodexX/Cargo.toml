@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/codexx-core",
+  "crates/codexx-data",
+  "apps/codexx-launcher",
+  "apps/codexx-manager/src-tauri",
+]
+
+[workspace.package]
+version = "1.2.15"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/muddle369/CodexX"
+
+[workspace.dependencies]
+anyhow = "1"
+base64 = "0.22"
+directories = "6"
+fs2 = "0.4"
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "system-proxy"], default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+toml = "0.8"
+toml_edit = "0.22"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+winresource = "0.1"
