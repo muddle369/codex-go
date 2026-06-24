@@ -42,7 +42,8 @@ fn launcher_binary_embeds_codex_icon_resource() {
     let build_rs = std::fs::read_to_string(&launcher_build).expect("read launcher build.rs");
 
     assert!(build_rs.contains("WindowsResource"));
-    assert!(build_rs.contains("icons/icon.ico"));
+    assert!(build_rs.contains("../../assets/images/codex-go.ico"));
+    assert!(build_rs.contains("windres"));
 }
 
 #[test]
