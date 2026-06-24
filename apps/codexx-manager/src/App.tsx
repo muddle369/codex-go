@@ -2296,26 +2296,26 @@ function OverviewScreen({
                 <Network className="h-5 w-5" />
               </div>
               <div>
-                <span className="eyebrow">官方中转站</span>
-                <h2>007.007ai.cc</h2>
+                <span className="eyebrow">生产队的挖掘机-专业AI生成平台</span>
+                <h2>wjj.007ai.cc</h2>
               </div>
             </div>
             <div className="jojocode-overview-side">
               {platformKind === "windows" ? (
                 <div className="overview-link-actions">
-                  <Button onClick={() => void actions.openExternalUrl("https://007.007ai.cc")}>
+                  <Button onClick={() => void actions.openExternalUrl("https://wjj.007ai.cc")}>
                     <ExternalLink className="h-4 w-4" />
-                    打开007ai
+                    打开生产队的挖掘机
                   </Button>
-                  <Button onClick={() => void actions.copyExternalUrl("https://007.007ai.cc")} variant="secondary">
+                  <Button onClick={() => void actions.copyExternalUrl("https://wjj.007ai.cc")} variant="secondary">
                     <Copy className="h-4 w-4" />
                     复制链接
                   </Button>
                 </div>
               ) : (
-                <Button onClick={() => void actions.openExternalUrl("https://007.007ai.cc")}>
+                <Button onClick={() => void actions.openExternalUrl("https://wjj.007ai.cc")}>
                   <ExternalLink className="h-4 w-4" />
-                  打开007ai
+                  打开生产队的挖掘机
                 </Button>
               )}
             </div>

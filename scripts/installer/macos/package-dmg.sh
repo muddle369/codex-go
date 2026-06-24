@@ -14,7 +14,7 @@ TRAY_ICON_SOURCE="$ROOT/assets/images/tray-icon.ico"
 ICON_NAME="codexgo.icns"
 ICON_ICNS="$DIST/$ICON_NAME"
 
-rm -rf "$DIST"
+rm -rf "$STAGE" "$DMG" "$ICON_ICNS" "$DIST/codexgo.iconset"
 mkdir -p "$STAGE"
 
 prepare_icon() {
