@@ -44,7 +44,9 @@ jobs:
           New-Item -ItemType Directory -Force dist/windows/app | Out-Null
           Copy-Item target/release/codexgo.exe dist/windows/app/
           Copy-Item target/release/codexgo-manager.exe dist/windows/app/
-          Copy-Item target/release/WebView2Loader.dll dist/windows/app/
+          $webview2 = Get-ChildItem target/release -Recurse -Filter WebView2Loader.dll | Select-Object -First 1
+          if (-not $webview2) { throw "WebView2Loader.dll not found under target/release" }
+          Copy-Item $webview2.FullName dist/windows/app/
 
       - name: Build Windows installer
         shell: pwsh
