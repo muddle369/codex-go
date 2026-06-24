@@ -1518,9 +1518,10 @@ experimental_bearer_token = "sk-existing""#
 
         store.save(&settings).unwrap();
 
+        let expected = normalize_settings_config_sections(settings);
         let loaded = store.load().unwrap();
         let active_aggregate = loaded.active_aggregate_relay_profile().unwrap();
-        assert_eq!(loaded, settings);
+        assert_eq!(loaded, expected);
         assert_eq!(
             active_aggregate.strategy,
             AggregateRelayStrategy::WeightedRoundRobin
