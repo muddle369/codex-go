@@ -22,13 +22,13 @@ fn version_comparison_uses_numeric_segments() {
 fn github_payload_selects_platform_installer() {
     let release = release_from_github_payload(&json!({
         "tag_name": "v1.0.9",
-        "html_url": "https://github.com/muddle369/CodexX/releases/tag/v1.0.9",
+        "html_url": "https://github.com/muddle369/codex-go/releases/tag/v1.0.9",
         "body": "fixes",
         "assets": [
             {"name": "source.zip", "browser_download_url": "https://example.test/source.zip"},
             {"name": "codexx-manager.exe", "browser_download_url": "https://example.test/manager.exe"},
-            {"name": "CodexX_1.0.9_x64-setup.exe", "browser_download_url": "https://example.test/setup.exe"},
-            {"name": "CodexX_1.0.9_x64.dmg", "browser_download_url": "https://example.test/app.dmg"}
+            {"name": "CodexGO-1.0.9-windows-x64-setup.exe", "browser_download_url": "https://example.test/setup.exe"},
+            {"name": "CodexGO-1.0.9-macos-x64.dmg", "browser_download_url": "https://example.test/app.dmg"}
         ]
     }))
     .unwrap();
@@ -37,10 +37,10 @@ fn github_payload_selects_platform_installer() {
     if cfg!(windows) {
         assert_eq!(
             release.asset_name.as_deref(),
-            Some("CodexX_1.0.9_x64-setup.exe")
+            Some("CodexGO-1.0.9-windows-x64-setup.exe")
         );
     } else if cfg!(target_os = "macos") {
-        assert_eq!(release.asset_name.as_deref(), Some("CodexX_1.0.9_x64.dmg"));
+        assert_eq!(release.asset_name.as_deref(), Some("CodexGO-1.0.9-macos-x64.dmg"));
     } else {
         assert_eq!(release.asset_name.as_deref(), None);
     }
@@ -50,12 +50,12 @@ fn github_payload_selects_platform_installer() {
 fn latest_json_payload_selects_platform_installer_without_github_api_shape() {
     let release = release_from_latest_json_payload(&json!({
         "version": "v1.1.6",
-        "url": "https://github.com/muddle369/CodexX/releases/tag/v1.1.6",
+        "url": "https://github.com/muddle369/codex-go/releases/tag/v1.1.6",
         "body": "静态更新描述",
         "assets": [
             {"name": "source.zip", "url": "https://example.test/source.zip"},
-            {"name": "CodexX-1.1.6-windows-x64-setup.exe", "url": "https://example.test/setup.exe"},
-            {"name": "CodexX-1.1.6-macos-x64.dmg", "url": "https://example.test/app.dmg"}
+            {"name": "CodexGO-1.1.6-windows-x64-setup.exe", "url": "https://example.test/setup.exe"},
+            {"name": "CodexGO-1.1.6-macos-x64.dmg", "url": "https://example.test/app.dmg"}
         ]
     }))
     .unwrap();
@@ -65,12 +65,12 @@ fn latest_json_payload_selects_platform_installer_without_github_api_shape() {
     if cfg!(windows) {
         assert_eq!(
             release.asset_name.as_deref(),
-            Some("CodexX-1.1.6-windows-x64-setup.exe")
+            Some("CodexGO-1.1.6-windows-x64-setup.exe")
         );
     } else if cfg!(target_os = "macos") {
         assert_eq!(
             release.asset_name.as_deref(),
-            Some("CodexX-1.1.6-macos-x64.dmg")
+            Some("CodexGO-1.1.6-macos-x64.dmg")
         );
     } else {
         assert_eq!(release.asset_name.as_deref(), None);
@@ -81,7 +81,7 @@ fn latest_json_payload_selects_platform_installer_without_github_api_shape() {
 fn asset_selection_prefers_current_platform_artifacts() {
     let assets = vec![
         (
-            "CodexX.zip".to_string(),
+            "CodexGO.zip".to_string(),
             "https://example.test/source.zip".to_string(),
         ),
         (
@@ -89,21 +89,21 @@ fn asset_selection_prefers_current_platform_artifacts() {
             "https://example.test/manager.exe".to_string(),
         ),
         (
-            "CodexX_1.0.9_x64-setup.exe".to_string(),
+            "CodexGO-1.0.9-windows-x64-setup.exe".to_string(),
             "https://example.test/setup.exe".to_string(),
         ),
         (
-            "CodexX_1.0.9_x64.dmg".to_string(),
+            "CodexGO-1.0.9-macos-x64.dmg".to_string(),
             "https://example.test/app.dmg".to_string(),
         ),
     ];
 
     if cfg!(windows) {
         let selected = select_update_asset(&assets).unwrap();
-        assert_eq!(selected.name, "CodexX_1.0.9_x64-setup.exe");
+        assert_eq!(selected.name, "CodexGO-1.0.9-windows-x64-setup.exe");
     } else if cfg!(target_os = "macos") {
         let selected = select_update_asset(&assets).unwrap();
-        assert_eq!(selected.name, "CodexX_1.0.9_x64.dmg");
+        assert_eq!(selected.name, "CodexGO-1.0.9-macos-x64.dmg");
     } else {
         assert!(select_update_asset(&assets).is_none());
     }
