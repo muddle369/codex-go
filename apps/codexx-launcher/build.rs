@@ -12,6 +12,16 @@ fn main() {
         return;
     }
 
+    if target.contains("msvc") {
+        let mut resource = winresource::WindowsResource::new();
+        resource.set_icon("../../assets/images/codex-go.ico");
+        resource.set_manifest(include_str!(
+            "../codexx-manager/src-tauri/windows-app-manifest.xml"
+        ));
+        resource.compile().expect("compile launcher icon resource");
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let windres = if target == "x86_64-pc-windows-gnu" {
