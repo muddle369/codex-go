@@ -981,14 +981,17 @@ export function App() {
   };
 
   const hideWindowAfterLaunch = () => {
-    setLaunchPanelVisible(false);
-    setRoute("overview");
+    const place = platformKind === "macos" ? "菜单栏" : platformKind === "windows" ? "托盘" : "后台";
+    const reopen = platformKind === "macos" ? "点击菜单栏图标可重新打开。" : platformKind === "windows" ? "点击托盘图标可重新打开。" : `重新打开 ${BRAND.productName} 可继续管理。`;
+    showNotice("Codex 已启动", `${BRAND.productName} 将隐藏到${place}，${reopen}`, "ok");
     launchInProgressRef.current = false;
     window.setTimeout(() => {
+      setLaunchPanelVisible(false);
+      setRoute("overview");
       void call<CommandResult<Record<string, unknown>>>("hide_main_window").catch((error) => {
         console.warn("hide_main_window failed", error);
       });
-    }, 350);
+    }, 2000);
   };
 
   const startCodexFromPanel = async () => {
@@ -2813,7 +2816,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title="实验脚本" detail={market?.market.updatedAt ? `清单更新时间：${market.market.updatedAt}` : "从 GitHub 静态清单加载"} />
+        <CardHead title="实验脚本" detail={market?.market.updatedAt ? `清单更新时间：${formatDateTime(market.market.updatedAt)}` : "从 GitHub 静态清单加载"} />
         <CardContent>
           {marketScripts.length ? (
             <div className="script-market-grid">
@@ -3522,12 +3525,6 @@ function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actio
           <Download className="h-4 w-4" />
           {script.updateAvailable ? "更新" : script.installed ? "重新安装" : "安装"}
         </Button>
-        {script.homepage ? (
-          <Button onClick={() => void actions.openExternalUrl(script.homepage)} size="sm" variant="secondary">
-            <ExternalLink className="h-4 w-4" />
-            主页
-          </Button>
-        ) : null}
       </div>
     </div>
   );
@@ -6204,6 +6201,13 @@ function zedRemoteSourceLabel(source: string) {
 function formatTime(value: number) {
   if (!value) return "-";
   return new Date(value).toLocaleString("zh-CN");
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (part: number) => part.toString().padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function formatDuration(startedAtMs: number): string {

@@ -2074,6 +2074,11 @@ body {
   align-items: flex-start;
 }
 
+.script-market-title [class*="rounded-full"] {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .script-market-title > div {
   display: grid;
   gap: 3px;
@@ -2101,6 +2106,10 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.script-market-actions button {
+  white-space: nowrap;
 }
 
 .script-market-tag {
