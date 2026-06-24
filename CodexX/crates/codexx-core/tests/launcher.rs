@@ -195,15 +195,15 @@ fn launcher_builds_debug_arguments_and_commands() {
     let app_dir = PathBuf::from(r"C:\Codex\app");
 
     assert_eq!(
-        build_codex_arguments(9229, &[]),
+        build_codex_arguments(9329, &[]),
         vec![
-            "--remote-debugging-port=9229".to_string(),
-            "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
+            "--remote-debugging-port=9329".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9329".to_string(),
         ]
     );
-    let command = build_codex_command(&app_dir, 9229, &[]);
-    assert_eq!(command[1], "--remote-debugging-port=9229");
-    assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9229");
+    let command = build_codex_command(&app_dir, 9329, &[]);
+    assert_eq!(command[1], "--remote-debugging-port=9329");
+    assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9329");
 }
 
 #[test]
@@ -240,17 +240,17 @@ fn launcher_appends_extra_codex_arguments_after_debug_arguments() {
     ];
 
     assert_eq!(
-        build_codex_arguments(9229, &extra_args),
+        build_codex_arguments(9329, &extra_args),
         vec![
-            "--remote-debugging-port=9229".to_string(),
-            "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
+            "--remote-debugging-port=9329".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9329".to_string(),
             "--force_high_performance_gpu".to_string(),
             "--enable-features=UseOzonePlatform".to_string(),
         ]
     );
-    let command = build_codex_command(&app_dir, 9229, &extra_args);
-    assert_eq!(command[1], "--remote-debugging-port=9229");
-    assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9229");
+    let command = build_codex_command(&app_dir, 9329, &extra_args);
+    assert_eq!(command[1], "--remote-debugging-port=9329");
+    assert_eq!(command[2], "--remote-allow-origins=http://127.0.0.1:9329");
     assert_eq!(command[3], "--force_high_performance_gpu");
     assert_eq!(command[4], "--enable-features=UseOzonePlatform");
 }
@@ -266,10 +266,10 @@ fn launcher_constructs_windows_packaged_activation_without_real_app() {
         "OpenAI.Codex_2p2nqsd0c76g0!App"
     );
     assert_eq!(
-        build_packaged_activation(&app_dir, 9229, &[]).unwrap(),
+        build_packaged_activation(&app_dir, 9329, &[]).unwrap(),
         CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
-            arguments: "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229"
+            arguments: "--remote-debugging-port=9329 --remote-allow-origins=http://127.0.0.1:9329"
                 .to_string(),
             process_id: None,
         }
@@ -284,11 +284,11 @@ fn launcher_packaged_activation_appends_extra_codex_arguments() {
     let extra_args = vec!["--force_high_performance_gpu".to_string()];
 
     assert_eq!(
-        build_packaged_activation(&app_dir, 9229, &extra_args).unwrap(),
+        build_packaged_activation(&app_dir, 9329, &extra_args).unwrap(),
         CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
             arguments:
-                "--remote-debugging-port=9229 --remote-allow-origins=http://127.0.0.1:9229 --force_high_performance_gpu"
+                "--remote-debugging-port=9329 --remote-allow-origins=http://127.0.0.1:9329 --force_high_performance_gpu"
                     .to_string(),
             process_id: None,
         }
@@ -299,7 +299,7 @@ fn launcher_packaged_activation_appends_extra_codex_arguments() {
 fn launcher_packaged_activation_can_preserve_process_id() {
     let launch = CodexLaunch::PackagedActivation {
         app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
-        arguments: "--remote-debugging-port=9229".to_string(),
+        arguments: "--remote-debugging-port=9329".to_string(),
         process_id: Some(4242),
     };
 
@@ -336,19 +336,19 @@ fn launcher_windows_packaged_process_management_uses_native_api() {
 
 #[test]
 fn launcher_macos_open_command_waits_for_app_exit() {
-    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9229, &[]);
+    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9329, &[]);
 
     assert_eq!(command[0], "open");
     assert!(command.contains(&"-W".to_string()));
     assert!(command.contains(&"-a".to_string()));
     assert!(command.contains(&"--args".to_string()));
-    assert!(command.contains(&"--remote-debugging-port=9229".to_string()));
+    assert!(command.contains(&"--remote-debugging-port=9329".to_string()));
 }
 
 #[test]
 fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
     let extra_args = vec!["--force_high_performance_gpu".to_string()];
-    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9229, &extra_args);
+    let command = build_macos_open_command(Path::new("/Applications/Codex.app"), 9329, &extra_args);
     let args_index = command
         .iter()
         .position(|part| part == "--args")
@@ -357,8 +357,8 @@ fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
     assert_eq!(
         &command[args_index + 1..],
         &[
-            "--remote-debugging-port=9229".to_string(),
-            "--remote-allow-origins=http://127.0.0.1:9229".to_string(),
+            "--remote-debugging-port=9329".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9329".to_string(),
             "--force_high_performance_gpu".to_string(),
         ]
     );
@@ -366,23 +366,23 @@ fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
 
 #[test]
 fn ports_windows_falls_back_to_ephemeral_when_requested_is_busy() {
-    let selected = select_platform_loopback_port_with(9229, true, |_| false, || 43001);
+    let selected = select_platform_loopback_port_with(9329, true, |_| false, || 43001);
 
     assert_eq!(selected, 43001);
 }
 
 #[test]
 fn ports_windows_packaged_debug_falls_back_to_ephemeral_when_requested_is_busy() {
-    let selected = select_packaged_codex_debug_port_with(9229, true, |_| false, || 43001);
+    let selected = select_packaged_codex_debug_port_with(9329, true, |_| false, || 43001);
 
     assert_eq!(selected, 43001);
 }
 
 #[test]
 fn ports_non_windows_keeps_requested_even_when_busy() {
-    let selected = select_platform_loopback_port_with(9229, false, |_| false, || 43001);
+    let selected = select_platform_loopback_port_with(9329, false, |_| false, || 43001);
 
-    assert_eq!(selected, 9229);
+    assert_eq!(selected, 9329);
 }
 
 #[tokio::test]
@@ -422,7 +422,7 @@ async fn default_helper_serves_backend_status_over_http() {
 #[tokio::test]
 async fn default_helper_accepts_diagnostic_log_events_over_http() {
     let temp = tempfile::tempdir().unwrap();
-    let log_path = temp.path().join("codex-plus.log");
+    let log_path = temp.path().join("codexx.log");
     codexx_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
     let hooks = DefaultLaunchHooks::default();
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -476,8 +476,8 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir.clone()),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -489,16 +489,16 @@ async fn launch_lifecycle_runs_sync_before_launch_writes_success_and_shutdowns_o
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "select-debug:9229",
-            "select-helper:57321",
+            "select-debug:9329",
+            "select-helper:58321",
             "load-settings",
             "provider-sync",
-            "start-helper:57321",
-            "launch:9229",
-            "inject:9229:57321",
+            "start-helper:58321",
+            "launch:9329",
+            "inject:9329:58321",
             "status:running",
             "wait-codex",
-            "shutdown-helper:57321",
+            "shutdown-helper:58321",
         ]
     );
     assert_eq!(
@@ -528,8 +528,8 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -542,7 +542,7 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
         events
             .lock()
             .unwrap()
-            .contains(&"launch:9229:--force_high_performance_gpu".to_string())
+            .contains(&"launch:9329:--force_high_performance_gpu".to_string())
     );
 }
 
@@ -561,8 +561,8 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -574,15 +574,15 @@ async fn launch_lifecycle_keeps_js_injection_in_relay_mode() {
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "select-debug:9229",
-            "select-helper:57321",
+            "select-debug:9329",
+            "select-helper:58321",
             "load-settings",
-            "start-helper:57321",
-            "launch:9229",
-            "inject:9229:57321",
+            "start-helper:58321",
+            "launch:9329",
+            "inject:9329:58321",
             "status:running",
             "wait-codex",
-            "shutdown-helper:57321",
+            "shutdown-helper:58321",
         ]
     );
 }
@@ -602,8 +602,8 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -615,10 +615,10 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "select-debug:9229",
-            "select-helper:57321",
+            "select-debug:9329",
+            "select-helper:58321",
             "load-settings",
-            "launch:9229",
+            "launch:9329",
             "status:running",
             "wait-codex",
         ]
@@ -640,8 +640,8 @@ async fn launch_lifecycle_runs_computer_use_guard_when_enabled() {
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -653,17 +653,17 @@ async fn launch_lifecycle_runs_computer_use_guard_when_enabled() {
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "select-debug:9229",
-            "select-helper:57321",
+            "select-debug:9329",
+            "select-helper:58321",
             "load-settings",
             "computer-use-guard",
-            "start-helper:57321",
-            "launch:9229",
+            "start-helper:58321",
+            "launch:9329",
             "computer-use-guard-watchdog",
-            "inject:9229:57321",
+            "inject:9329:58321",
             "status:running",
             "wait-codex",
-            "shutdown-helper:57321",
+            "shutdown-helper:58321",
         ]
     );
 }
@@ -680,8 +680,8 @@ async fn launch_lifecycle_skips_computer_use_guard_by_default() {
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -693,7 +693,7 @@ async fn launch_lifecycle_skips_computer_use_guard_by_default() {
     let events = events.lock().unwrap().clone();
     assert!(!events.contains(&"computer-use-guard".to_string()));
     assert!(!events.contains(&"computer-use-guard-watchdog".to_string()));
-    assert!(events.contains(&"launch:9229".to_string()));
+    assert!(events.contains(&"launch:9329".to_string()));
 }
 
 #[tokio::test]
@@ -711,8 +711,8 @@ async fn launch_lifecycle_does_not_apply_relay_profile_while_launching_codex() {
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -723,7 +723,7 @@ async fn launch_lifecycle_does_not_apply_relay_profile_while_launching_codex() {
 
     let events = events.lock().unwrap().clone();
     assert!(!events.contains(&"apply-relay".to_string()));
-    assert!(events.contains(&"launch:9229".to_string()));
+    assert!(events.contains(&"launch:9329".to_string()));
 }
 
 #[tokio::test]
@@ -741,8 +741,8 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -754,7 +754,7 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
     let events = events.lock().unwrap().clone();
     assert!(!events.contains(&"apply-relay".to_string()));
     assert!(!events.contains(&"computer-use-guard".to_string()));
-    assert!(events.contains(&"launch:9229".to_string()));
+    assert!(events.contains(&"launch:9329".to_string()));
 }
 
 #[tokio::test]
@@ -793,8 +793,8 @@ experimental_bearer_token = "sk-test"
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -806,7 +806,7 @@ experimental_bearer_token = "sk-test"
     let events = events.lock().unwrap().clone();
     assert!(!events.contains(&"apply-relay".to_string()));
     assert!(!events.contains(&"computer-use-guard".to_string()));
-    assert!(events.contains(&"launch:9229".to_string()));
+    assert!(events.contains(&"launch:9329".to_string()));
 }
 
 #[tokio::test]
@@ -821,8 +821,8 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store: status_store.clone(),
         },
         &hooks,
@@ -833,12 +833,12 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "select-debug:9229",
-            "select-helper:57321",
+            "select-debug:9329",
+            "select-helper:58321",
             "load-settings",
-            "start-helper:57321",
-            "launch:9229",
-            "inject:9229:57321",
+            "start-helper:58321",
+            "launch:9329",
+            "inject:9329:58321",
             "status:running_degraded",
         ]
     );
@@ -849,7 +849,7 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
     handle.wait_for_codex_exit().await.unwrap();
     let events = events.lock().unwrap().clone();
     assert!(events.contains(&"wait-codex".to_string()));
-    assert!(events.contains(&"shutdown-helper:57321".to_string()));
+    assert!(events.contains(&"shutdown-helper:58321".to_string()));
     assert!(!events.contains(&"terminate-codex".to_string()));
 }
 
@@ -865,8 +865,8 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
     let error = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store: status_store.clone(),
         },
         &hooks,
@@ -878,12 +878,12 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "select-debug:9229",
-            "select-helper:57321",
+            "select-debug:9329",
+            "select-helper:58321",
             "load-settings",
-            "start-helper:57321",
-            "launch:9229",
-            "shutdown-helper:57321",
+            "start-helper:58321",
+            "launch:9329",
+            "shutdown-helper:58321",
             "status:failed",
         ]
     );
@@ -928,7 +928,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
+            debug_port: 9329,
             helper_port: 58000,
             status_store,
         },
@@ -939,14 +939,14 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
 
     let before_stop = events.lock().unwrap().clone();
     assert!(before_stop.contains(&"select-helper:58000".to_string()));
-    assert!(before_stop.contains(&"start-helper:57321".to_string()));
-    assert!(!before_stop.contains(&"inject:9229:57321".to_string()));
+    assert!(before_stop.contains(&"start-helper:58321".to_string()));
+    assert!(!before_stop.contains(&"inject:9329:58321".to_string()));
 
     handle.wait_for_codex_exit().await.unwrap();
 
     let after_stop = events.lock().unwrap().clone();
     assert!(after_stop.contains(&"wait-codex".to_string()));
-    assert!(after_stop.contains(&"shutdown-helper:57321".to_string()));
+    assert!(after_stop.contains(&"shutdown-helper:58321".to_string()));
 }
 
 #[tokio::test]
@@ -964,15 +964,15 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
     let hooks =
         FakeHooks::new(events.clone()).with_launch_result(CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
-            arguments: "--remote-debugging-port=9229".to_string(),
+            arguments: "--remote-debugging-port=9329".to_string(),
             process_id: Some(4242),
         });
 
     let error = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,
@@ -984,13 +984,13 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "select-debug:9229",
-            "select-helper:57321",
+            "select-debug:9329",
+            "select-helper:58321",
             "load-settings",
-            "start-helper:57321",
-            "launch:9229",
-            "inject:9229:57321",
-            "shutdown-helper:57321",
+            "start-helper:58321",
+            "launch:9329",
+            "inject:9329:58321",
+            "shutdown-helper:58321",
             "terminate-packaged:4242",
             "status:failed",
         ]
@@ -1007,7 +1007,7 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
     let hooks = FakeHooks::new(events.clone())
         .with_launch_result(CodexLaunch::PackagedActivation {
             app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".to_string(),
-            arguments: "--remote-debugging-port=9229".to_string(),
+            arguments: "--remote-debugging-port=9329".to_string(),
             process_id: Some(4242),
         })
         .with_inject_error("inject failed");
@@ -1015,8 +1015,8 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store,
         },
         &hooks,

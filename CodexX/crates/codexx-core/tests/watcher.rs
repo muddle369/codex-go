@@ -44,20 +44,20 @@ fn watcher_enable_and_disable_toggle_flag() {
 
 #[test]
 fn watcher_install_plan_registers_rust_launcher_at_logon() {
-    let plan = build_watcher_install_plan("C:/Tools/codexx.exe".into(), 9333);
+    let plan = build_watcher_install_plan("C:/Tools/codexgo.exe".into(), 9333);
 
-    assert_eq!(plan.run_value_name, "CodexXWatcher");
-    assert_eq!(plan.run_value, "\"C:/Tools/codexx.exe\" --debug-port 9333");
-    assert_eq!(plan.shortcut_name, "CodexXWatcher.lnk");
-    assert_eq!(plan.shortcut_target, "C:/Tools/codexx.exe");
+    assert_eq!(plan.run_value_name, "CodexGOWatcher");
+    assert_eq!(plan.run_value, "\"C:/Tools/codexgo.exe\" --debug-port 9333");
+    assert_eq!(plan.shortcut_name, "CodexGOWatcher.lnk");
+    assert_eq!(plan.shortcut_target, "C:/Tools/codexgo.exe");
     assert_eq!(plan.shortcut_arguments, "--debug-port 9333");
 }
 
 #[test]
 fn spawn_launcher_command_points_to_silent_binary_only() {
-    let command = build_spawn_launcher_command("C:/Tools/codexx.exe", 9444);
+    let command = build_spawn_launcher_command("C:/Tools/codexgo.exe", 9444);
 
-    assert_eq!(command[0], "C:/Tools/codexx.exe");
+    assert_eq!(command[0], "C:/Tools/codexgo.exe");
     assert!(command.contains(&"--debug-port".to_string()));
     assert!(command.contains(&"9444".to_string()));
     assert!(!command.iter().any(|part| part.contains("manager")));
@@ -83,11 +83,11 @@ fn codex_process_filter_keeps_only_windowsapps_codex_processes() {
 #[test]
 fn launcher_process_filter_protects_current_process_ancestry() {
     let processes = [
-        (10, 0, "codexx.exe"),
-        (20, 10, "codexx.exe"),
-        (30, 20, "codexx.exe"),
-        (40, 10, "codexx.exe"),
-        (50, 10, "codexx-manager.exe"),
+        (10, 0, "codexgo.exe"),
+        (20, 10, "codexgo.exe"),
+        (30, 20, "codexgo.exe"),
+        (40, 10, "codexgo.exe"),
+        (50, 10, "codexgo-manager.exe"),
     ];
 
     assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);

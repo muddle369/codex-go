@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::user_scripts::UserScriptManager;
 
 pub const DEFAULT_MARKET_INDEX_URL: &str =
-    "https://raw.githubusercontent.com/muddle369/CodexXScriptMarket/main/index.json";
+    "https://raw.githubusercontent.com/muddle369/codex-go/main/index.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ScriptMarketManifest {

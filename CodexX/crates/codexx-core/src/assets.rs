@@ -5,8 +5,8 @@ use std::path::Path;
 use crate::settings::BackendSettings;
 
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
-const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/sponsor-alipay.jpg");
-const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/sponsor-wechat.jpg");
+const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/feng-alipay.JPG");
+const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/feng-wechat.JPG");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
 
 pub fn renderer_script() -> &'static str {

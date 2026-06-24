@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "updated_at": "2026-06-16T06:18:38.000Z",
+  "scripts": [
+    {
+      "id": "codex-context-ring-restore",
+      "name": "Codex Context Ring Restore",
+      "description": "还原官方圆环上下文体验",
+      "version": "0.1.2",
+      "author": "win9zhx",
+      "tags": [
+        "context",
+        "ring",
+        "ui",
+        "restore",
+        "native"
+      ],
+      "homepage": "https://github.com/muddle369/codex-go",
+      "script_url": "https://raw.githubusercontent.com/muddle369/codex-go/main/scripts/codex-context-ring-restore.js",
+      "sha256": "4afbb0073f3b11556208cb0427d8e0f6c935ccfc47ff53f814dad6d03e819ee7"
+    },
+    {
+      "id": "codex-context-used-meter",
+      "name": "Codex Context Used Meter",
+      "description": "显示上下文用量",
+      "version": "33",
+      "author": "Minghou-Lei",
+      "tags": [
+        "context",
+        "tokens",
+        "ui",
+        "meter"
+      ],
+      "homepage": "https://github.com/muddle369/codex-go",
+      "script_url": "https://raw.githubusercontent.com/muddle369/codex-go/main/scripts/codex-context-used-meter.js",
+      "sha256": "f13df61c833b58048ba3f88b9013440e729dc7bc016dc578b7c6a708853344c0"
+    },
+    {
+      "id": "hide-usage-alert",
+      "name": "Hide Usage Alert",
+      "description": "隐藏额度提醒",
+      "version": "0.1.2",
+      "author": "Ghibli1024",
+      "tags": [
+        "usage",
+        "quota",
+        "ui",
+        "hide"
+      ],
+      "homepage": "https://github.com/muddle369/codex-go",
+      "script_url": "https://raw.githubusercontent.com/muddle369/codex-go/main/scripts/hide-usage-alert.js",
+      "sha256": "b13279be9d6707c3109d0f71c7c1b56b2645cb659cbbca6a67f438022f3bae9c"
+    },
+    {
+      "id": "codex-token-usage",
+      "name": "Codex Token Usage",
+      "description": "显示token消耗统计",
+      "version": "0.1.7",
+      "author": "Albert_Luo",
+      "tags": [
+        "codex",
+        "tokens",
+        "usage",
+        "metrics",
+        "cache"
+      ],
+      "homepage": "https://github.com/muddle369/codex-go",
+      "script_url": "https://raw.githubusercontent.com/muddle369/codex-go/main/scripts/codex-token-usage.js",
+      "sha256": "03808d22f53da374837227636ebd9f1ba593fe5aba6219e90e636d7ed7c806eb"
+    },
+    {
+      "id": "codex-daily-token-usage",
+      "name": "Codex Daily Token Usage",
+      "description": "每日 Token 统计，近 5 日滚动存储，自动复用已有采集，支持 Model 价格、成本估算、趋势明细和分享图",
+      "version": "1.4.3",
+      "author": "kts-kris",
+      "tags": [
+        "codex",
+        "tokens",
+        "usage",
+        "daily",
+        "share",
+        "ui"
+      ],
+      "homepage": "https://github.com/muddle369/codex-go",
+      "script_url": "https://raw.githubusercontent.com/muddle369/codex-go/main/scripts/codex-daily-token-usage.js",
+      "sha256": "890df2074a4ef0be3d424c86a21dca1ed1b9bd9a121dea112baa16fbb242d04a"
+    },
+    {
+      "id": "codex-list-pagebuster",
+      "name": "Codex List Pagebuster",
+      "description": "补强会话列表",
+      "version": "0.1.1",
+      "author": "puppnn",
+      "tags": [
+        "codex",
+        "history",
+        "sidebar",
+        "sessions",
+        "ui"
+      ],
+      "homepage": "https://github.com/muddle369/codex-go",
+      "script_url": "https://raw.githubusercontent.com/muddle369/codex-go/main/scripts/codex-list-pagebuster.js",
+      "sha256": "756ee2e2a91df449738192ae500de1ab75cbbc7129968982ca37f6f5a9aad78e"
+    },
+    {
+      "id": "codex-zhcn-translate",
+      "name": "Codex简体中文汉化",
+      "description": "全界面简体汉化补丁",
+      "version": "1.0",
+      "author": "hL091015",
+      "tags": [
+        "translation",
+        "chinese",
+        "zh-CN",
+        "ui"
+      ],
+      "homepage": "https://github.com/muddle369/codex-go",
+      "script_url": "https://raw.githubusercontent.com/muddle369/codex-go/main/scripts/codex-zhcn-translate.js",
+      "sha256": "be19a7930116dfe8fa1c68571d6a3bb3130714f77c7e32a6c1da543a182270f5"
+    }
+  ]
+}

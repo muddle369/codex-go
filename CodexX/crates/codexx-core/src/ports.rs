@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 
-pub const LAUNCHER_GUARD_PORT: u16 = 57320;
-pub const MANAGER_GUARD_PORT: u16 = 57319;
+pub const LAUNCHER_GUARD_PORT: u16 = 58320;
+pub const MANAGER_GUARD_PORT: u16 = 58319;
 
 pub fn select_platform_loopback_port(requested: u16) -> u16 {
     select_platform_loopback_port_with(
@@ -214,7 +214,7 @@ mod tests {
     fn resilient_guard_reports_conflict_when_requested_port_is_connectable() {
         let temp = tempfile::tempdir().unwrap();
         let error = acquire_resilient_loopback_port_guard_with(
-            57319,
+            58319,
             temp.path(),
             |_| {
                 Err(std::io::Error::new(
@@ -233,7 +233,7 @@ mod tests {
     fn resilient_guard_uses_lock_fallback_when_requested_port_is_not_connectable() {
         let temp = tempfile::tempdir().unwrap();
         let guard = acquire_resilient_loopback_port_guard_with(
-            57319,
+            58319,
             temp.path(),
             |_| {
                 Err(std::io::Error::new(
@@ -249,7 +249,7 @@ mod tests {
         assert!(guard.fallback_path().is_some());
 
         let second = acquire_resilient_loopback_port_guard_with(
-            57319,
+            58319,
             temp.path(),
             |_| {
                 Err(std::io::Error::new(

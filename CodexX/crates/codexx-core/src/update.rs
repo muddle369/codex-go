@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DEFAULT_REPOSITORY: &str = "muddle369/CodexX";
+pub const DEFAULT_REPOSITORY: &str = "muddle369/codex-go";
 pub const DEFAULT_LATEST_JSON_URL: &str =
-    "https://github.com/muddle369/CodexX/releases/latest/download/latest.json";
+    "https://github.com/muddle369/codex-go/releases/latest/download/latest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseAsset {
@@ -259,8 +259,7 @@ fn platform_asset_rank(name: &str) -> u8 {
 }
 
 fn is_windows_installer_asset(name: &str) -> bool {
-    name.contains("codex")
-        && name.contains("plus")
+    (name.contains("codexgo") || name.contains("codex-go"))
         && (name.ends_with(".msi")
             || name.ends_with("-setup.exe")
             || name.ends_with("_setup.exe")
@@ -269,7 +268,7 @@ fn is_windows_installer_asset(name: &str) -> bool {
 }
 
 fn is_macos_installer_asset(name: &str) -> bool {
-    name.contains("codex") && name.contains("plus") && name.ends_with(".dmg")
+    (name.contains("codexgo") || name.contains("codex-go")) && name.ends_with(".dmg")
 }
 
 pub fn launch_installer(path: &Path) -> anyhow::Result<()> {

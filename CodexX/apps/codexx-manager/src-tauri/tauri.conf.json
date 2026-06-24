@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CodexX Manager",
-  "version": "1.2.15",
+  "productName": "CodexX",
+  "version": "1.0.0",
   "identifier": "com.muddle369.codexx.manager",
   "build": {
     "beforeDevCommand": "npm run vite:dev",
@@ -14,7 +14,7 @@
       {
         "create": false,
         "label": "main",
-        "title": "CodexX Manager",
+        "title": "CodexX",
         "width": 1180,
         "height": 820,
         "minWidth": 960,

@@ -26,7 +26,7 @@ impl Default for LauncherHooks {
             core: Arc::new(DefaultLaunchHooks::default()),
             data: Arc::new(LauncherDataService::default()),
             runtime: Arc::new(LauncherRuntimeService::new(
-                9229,
+                9329,
                 default_user_script_manager(),
             )),
         }
@@ -35,7 +35,12 @@ impl Default for LauncherHooks {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let options = parse_launch_options(std::env::args().skip(1));
+    let parsed = parse_launcher_args(std::env::args().skip(1));
+    let options = parsed.options;
+    if !parsed.launch_now {
+        open_launch_panel()?;
+        return Ok(());
+    }
     let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
         activate_existing_codex_app(&options).await?;
         return Ok(());
@@ -47,6 +52,20 @@ async fn main() -> Result<()> {
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
     handle.wait_for_codex_exit().await?;
     Ok(())
+}
+
+fn open_launch_panel() -> anyhow::Result<()> {
+    let manager = codexx_core::install::companion_binary_path(codexx_core::install::MANAGER_BINARY);
+    let mut command = std::process::Command::new(&manager);
+    command.arg("--launch-panel");
+    #[cfg(windows)]
+    {
+        command.creation_flags(codexx_core::windows_create_no_window());
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .with_context(|| format!("failed to open launch panel at {}", manager.display()))
 }
 
 fn acquire_single_instance_guard(
@@ -208,15 +227,25 @@ fn open_manager_with_update_prompt() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
 }
 
-fn parse_launch_options<I, S>(args: I) -> LaunchOptions
+#[derive(Debug, Clone)]
+struct ParsedLauncherArgs {
+    options: LaunchOptions,
+    launch_now: bool,
+}
+
+fn parse_launcher_args<I, S>(args: I) -> ParsedLauncherArgs
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
     let mut options = LaunchOptions::default();
+    let mut launch_now = false;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_ref() {
+            "--launch-now" => {
+                launch_now = true;
+            }
             "--app-path" => {
                 if let Some(value) = iter.next() {
                     let value = value.as_ref().trim();
@@ -242,7 +271,18 @@ where
             _ => {}
         }
     }
-    options
+    ParsedLauncherArgs {
+        options,
+        launch_now,
+    }
+}
+
+fn parse_launch_options<I, S>(args: I) -> LaunchOptions
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    parse_launcher_args(args).options
 }
 
 #[async_trait::async_trait(?Send)]
@@ -567,10 +607,6 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         Ok(codexx_core::model_catalog::read_codex_model_catalog().await)
     }
 
-    async fn ads(&self) -> anyhow::Result<Value> {
-        codexx_core::ads::fetch_ad_list().await
-    }
-
     async fn zed_remote_status(&self) -> anyhow::Result<Value> {
         Ok(codexx_core::zed_remote::zed_remote_status())
     }
@@ -773,6 +809,13 @@ mod tests {
         assert_eq!(options.app_dir, Some(PathBuf::from("C:/Codex/App")));
         assert_eq!(options.debug_port, 9333);
         assert_eq!(options.helper_port, 57322);
+    }
+
+    #[test]
+    fn parse_launcher_args_accepts_launch_now_flag() {
+        let parsed = parse_launcher_args(["--launch-now"]);
+
+        assert!(parsed.launch_now);
     }
 
     #[test]

@@ -1,5 +1,7 @@
+import { BRAND } from "./brand";
+
 /**
- * CodexX 供应商预设
+ * 供应商预设
  * 基于 cc-switch (MIT) 的 codexProviderPresets.ts，作者 Jason Young
  * https://github.com/farion1231/cc-switch
  *
@@ -163,110 +165,13 @@ export const PRESETS: ProviderPreset[] = [
 
   // ── 聚合/中转 ──
   {
-    id: "jojocode",
-    name: "JOJO Code",
-    websiteUrl: "https://jojocode.com/",
-    apiKeyUrl: "https://jojocode.com/",
+    id: "007ai",
+    name: BRAND.officialRelayName,
+    websiteUrl: BRAND.officialRelayUrl,
+    apiKeyUrl: BRAND.officialRelayUrl,
     category: "aggregator",
-    baseUrl: "https://jojocode.com/v1",
+    baseUrl: BRAND.officialRelayBaseUrl,
     protocol: "responses",
     model: "gpt-5.5",
-  },
-  {
-    id: "siliconflow",
-    name: "SiliconFlow",
-    websiteUrl: "https://siliconflow.cn",
-    apiKeyUrl: "https://cloud.siliconflow.cn/i/drGuwc9k",
-    category: "aggregator",
-    baseUrl: "https://api.siliconflow.cn/v1",
-    protocol: "chatCompletions",
-    model: "Pro/MiniMaxAI/MiniMax-M2.7",
-    modelList: ["Pro/MiniMaxAI/MiniMax-M2.7"],
-  },
-  {
-    id: "openrouter",
-    name: "OpenRouter",
-    websiteUrl: "https://openrouter.ai",
-    apiKeyUrl: "https://openrouter.ai/keys",
-    category: "aggregator",
-    baseUrl: "https://openrouter.ai/api/v1",
-    protocol: "chatCompletions",
-    model: "gpt-5.5",
-  },
-  {
-    id: "aihubmix",
-    name: "AiHubMix",
-    category: "aggregator",
-    baseUrl: "https://aihubmix.com/v1",
-    protocol: "responses",
-    model: "gpt-5.5",
-    websiteUrl: "https://aihubmix.com",
-  },
-  {
-    id: "apikeyfun",
-    name: "APIKEY.FUN",
-    category: "aggregator",
-    baseUrl: "https://api.apikey.fun/v1",
-    protocol: "responses",
-    model: "gpt-5.5",
-    modelList: ["gpt-5.5"],
-    websiteUrl: "https://apikey.fun",
-  },
-  {
-    id: "pateway",
-    name: "PatewayAI",
-    category: "aggregator",
-    baseUrl: "https://api.pateway.ai/v1",
-    protocol: "responses",
-    model: "gpt-5.5",
-    websiteUrl: "https://pateway.ai",
-  },
-  {
-    id: "therouter",
-    name: "TheRouter",
-    category: "aggregator",
-    baseUrl: "https://api.therouter.ai/v1",
-    protocol: "chatCompletions",
-    model: "openai/gpt-5.3-codex",
-    websiteUrl: "https://therouter.ai",
-  },
-  {
-    id: "novita",
-    name: "Novita AI",
-    category: "aggregator",
-    baseUrl: "https://api.novita.ai/openai/v1",
-    protocol: "chatCompletions",
-    model: "zai-org/glm-5.1",
-    modelList: ["zai-org/glm-5.1"],
-    websiteUrl: "https://novita.ai",
-  },
-  {
-    id: "shengsuanyun",
-    name: "Shengsuanyun",
-    category: "aggregator",
-    baseUrl: "https://router.shengsuanyun.com/api/v1",
-    protocol: "chatCompletions",
-    model: "openai/gpt-5.5",
-    websiteUrl: "https://www.shengsuanyun.com",
-  },
-  {
-    id: "ccsub",
-    name: "CCSub",
-    category: "aggregator",
-    baseUrl: "https://www.ccsub.net/v1",
-    protocol: "responses",
-    model: "gpt-5.5",
-    websiteUrl: "https://www.ccsub.net",
-  },
-
-  // ── 第三方 ──
-  {
-    id: "azure",
-    name: "Azure OpenAI",
-    category: "third_party",
-    baseUrl: "https://YOUR_RESOURCE_NAME.openai.azure.com/openai",
-    protocol: "responses",
-    model: "gpt-5.5",
-    websiteUrl: "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/codex",
   },
 ];

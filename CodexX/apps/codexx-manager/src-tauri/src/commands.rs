@@ -7,12 +7,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use codexx_core::install::SILENT_BINARY;
 use codexx_core::models::{DeleteResult, SessionRef};
 use codexx_core::script_market::{self, MarketScript, ScriptMarketManifest};
-use codexx_core::settings::{BackendSettings, RelayProfile, SettingsStore};
+use codexx_core::settings::{
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+};
 use codexx_core::status::{LaunchStatus, StatusStore};
 use codexx_core::user_scripts::UserScriptManager;
 use codexx_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
+
+use tauri::Manager;
 
 use crate::install::{self, InstallActionResult, InstallOptions};
 
@@ -261,12 +265,6 @@ pub struct WatcherPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AdsPayload {
-    pub version: u64,
-    pub ads: Vec<Value>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct ScriptMarketPayload {
     pub market: Value,
     pub user_scripts: Value,
@@ -276,6 +274,9 @@ pub struct ScriptMarketPayload {
 #[serde(rename_all = "camelCase")]
 pub struct StartupPayload {
     pub show_update: bool,
+    pub first_run: bool,
+    pub launch_panel: bool,
+    pub setup_completed: bool,
 }
 
 #[tauri::command]
@@ -294,15 +295,42 @@ pub fn startup_options() -> CommandResult<StartupPayload> {
         "启动参数已读取。",
         StartupPayload {
             show_update: startup_should_show_update(),
+            first_run: startup_is_first_run(),
+            launch_panel: startup_is_launch_panel(),
+            setup_completed: SettingsStore::default().setup_completed(),
         },
     )
+}
+
+pub fn startup_is_first_run() -> bool {
+    !SettingsStore::default().setup_completed() || std::env::args().any(|arg| arg == "--first-run")
+}
+
+pub fn startup_is_launch_panel() -> bool {
+    std::env::args().any(|arg| arg == "--launch-panel")
 }
 
 pub fn startup_should_show_update() -> bool {
     should_show_update(
         std::env::args(),
-        std::env::var("CODEX_PLUS_SHOW_UPDATE").ok().as_deref(),
+        std::env::var("CODEXX_SHOW_UPDATE").ok().as_deref(),
     )
+}
+
+#[tauri::command]
+pub fn show_main_window(app: tauri::AppHandle) -> CommandResult<Value> {
+    match set_main_window_visible(&app, true) {
+        Ok(()) => ok("主窗口已显示。", json!({})),
+        Err(error) => failed(&format!("显示主窗口失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub fn hide_main_window(app: tauri::AppHandle) -> CommandResult<Value> {
+    match set_main_window_visible(&app, false) {
+        Ok(()) => ok("主窗口已隐藏。", json!({})),
+        Err(error) => failed(&format!("隐藏主窗口失败：{error}"), json!({})),
+    }
 }
 
 fn should_show_update<I, S>(args: I, env_value: Option<&str>) -> bool
@@ -311,6 +339,23 @@ where
     S: AsRef<str>,
 {
     args.into_iter().any(|arg| arg.as_ref() == "--show-update") || env_value == Some("1")
+}
+
+fn set_main_window_visible<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    visible: bool,
+) -> anyhow::Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| anyhow::anyhow!("找不到主窗口"))?;
+    if visible {
+        let _ = window.unminimize();
+        window.show()?;
+        window.set_focus()?;
+    } else {
+        window.hide()?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -403,6 +448,7 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
 fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
     let launcher = codexx_core::install::companion_binary_path(SILENT_BINARY);
     let mut command = std::process::Command::new(&launcher);
+    command.arg("--launch-now");
     if !request.app_path.trim().is_empty() {
         command.arg("--app-path").arg(request.app_path.trim());
     }
@@ -656,6 +702,7 @@ fn local_session_adapter(db_path: &Path) -> codexx_data::SQLiteStorageAdapter {
 }
 
 fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSettings {
+    settings.setup_completed = true;
     if let Some(path) =
         codexx_core::app_paths::normalize_codex_app_path(Path::new(&settings.codex_app_path))
     {
@@ -1035,29 +1082,15 @@ fn persist_provider_sync_selection(provider: &str) {
 }
 
 #[tauri::command]
-pub async fn load_ads() -> CommandResult<AdsPayload> {
-    match codexx_core::ads::fetch_ad_list().await {
-        Ok(payload) => ok("推荐内容已加载。", ads_payload(payload)),
-        Err(error) => failed(
-            &format!("推荐内容加载失败：{error}"),
-            AdsPayload {
-                version: 1,
-                ads: Vec::new(),
-            },
-        ),
-    }
-}
-
-#[tauri::command]
 pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
     match script_market::fetch_market_manifest(script_market::DEFAULT_MARKET_INDEX_URL).await {
         Ok(manifest) => ok(
-            "脚本市场已刷新。",
-            script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),
+            "脚本实验室已刷新。",
+            script_market_payload_from_manifest(&manifest, "ok", "脚本实验室已刷新。"),
         ),
         Err(error) => failed(
-            &format!("脚本市场加载失败：{error}"),
-            failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
+            &format!("脚本实验室加载失败：{error}"),
+            failed_script_market_payload(&format!("脚本实验室加载失败：{error}")),
         ),
     }
 }
@@ -1076,8 +1109,8 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
             Ok(manifest) => manifest,
             Err(error) => {
                 return failed(
-                    &format!("脚本市场加载失败：{error}"),
-                    failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
+                    &format!("脚本实验室加载失败：{error}"),
+                    failed_script_market_payload(&format!("脚本实验室加载失败：{error}")),
                 );
             }
         };
@@ -1173,7 +1206,7 @@ pub async fn uninstall_entrypoints(options: InstallOptions) -> InstallActionResu
 pub async fn repair_shortcuts() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
         .await
-        .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
+        .unwrap_or_else(|error| install_background_failure("修复入口", error))
 }
 
 #[tauri::command]
@@ -1476,6 +1509,30 @@ pub struct RelayProfileSwitchRequest {
     pub previous_active_relay_id: String,
 }
 
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum QuickConfigMode {
+    PureApi,
+    MixedApi,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickConfigureTokenRequest {
+    pub token: String,
+    pub mode: QuickConfigMode,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickSwitchProfileRequest {
+    pub profile_id: String,
+}
+
+const QUICK_PROFILE_ID: &str = "codexx-quick";
+const QUICK_PROFILE_NAME: &str = "SCD_Ai";
+const QUICK_CONFIG_BASE_URL: &str = codexx_core::brand::OFFICIAL_RELAY_BASE_URL;
+
 #[tauri::command]
 pub fn switch_relay_profile(
     request: RelayProfileSwitchRequest,
@@ -1540,6 +1597,103 @@ pub fn switch_relay_profile(
             )
         }
     }
+}
+
+#[tauri::command]
+pub async fn quick_configure_token(
+    request: QuickConfigureTokenRequest,
+) -> CommandResult<RelaySwitchPayload> {
+    let token = request.token.trim().to_string();
+    if token.is_empty() {
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        let status = codexx_core::relay_config::relay_status_from_home(
+            &codexx_core::relay_config::default_codex_home_dir(),
+        );
+        return failed(
+            "令牌不能为空，请输入 API Key 后再保存。",
+            relay_switch_payload(settings, status, None),
+        );
+    }
+    if matches!(request.mode, QuickConfigMode::MixedApi) {
+        let home = codexx_core::relay_config::default_codex_home_dir();
+        let auth = codexx_core::relay_config::chatgpt_auth_status_from_home(&home);
+        if !auth.authenticated {
+            let settings = SettingsStore::default().load().unwrap_or_default();
+            let status = codexx_core::relay_config::relay_status_from_home(&home);
+            return failed(
+                "混合 API 模式需要先在 Codex 中完成 ChatGPT 官方登录。当前未检测到登录状态。",
+                relay_switch_payload(settings, status, None),
+            );
+        }
+    }
+
+    let mut settings = SettingsStore::default().load().unwrap_or_default();
+    let relay_mode = match request.mode {
+        QuickConfigMode::PureApi => RelayMode::PureApi,
+        QuickConfigMode::MixedApi => RelayMode::Official,
+    };
+    let official_mix_api_key = matches!(request.mode, QuickConfigMode::MixedApi);
+    let mut profile = quick_relay_profile(&token, relay_mode, official_mix_api_key);
+    match codexx_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
+        Ok((models, endpoint)) => {
+            let filtered_models = filter_quick_profile_models(models);
+            profile.model_list = filtered_models.join("\n");
+            log_manager_event(
+                "manager.quick_configure_token.models.ok",
+                json!({
+                    "endpoint": endpoint,
+                    "filteredModelCount": filtered_models.len()
+                }),
+            );
+        }
+        Err(error) => {
+            log_manager_event(
+                "manager.quick_configure_token.models.failed",
+                json!({
+                    "error": error.to_string()
+                }),
+            );
+        }
+    }
+    upsert_quick_relay_profile(&mut settings, profile);
+    settings.relay_profiles_enabled = true;
+    settings.active_relay_id = QUICK_PROFILE_ID.to_string();
+    settings.launch_mode = match request.mode {
+        QuickConfigMode::PureApi => codexx_core::settings::LaunchMode::Patch,
+        QuickConfigMode::MixedApi => codexx_core::settings::LaunchMode::Relay,
+    };
+
+    switch_relay_profile(RelayProfileSwitchRequest {
+        settings,
+        previous_active_relay_id: String::new(),
+    })
+}
+
+#[tauri::command]
+pub fn quick_switch_profile(
+    request: QuickSwitchProfileRequest,
+) -> CommandResult<RelaySwitchPayload> {
+    let profile_id = request.profile_id.trim().to_string();
+    let mut settings = SettingsStore::default().load().unwrap_or_default();
+    if !settings
+        .relay_profiles
+        .iter()
+        .any(|profile| profile.id == profile_id)
+    {
+        let status = codexx_core::relay_config::relay_status_from_home(
+            &codexx_core::relay_config::default_codex_home_dir(),
+        );
+        return failed(
+            "所选配置不存在，请进入高级配置确认供应商列表。",
+            relay_switch_payload(settings, status, None),
+        );
+    }
+    let previous_active_relay_id = settings.active_relay_id.clone();
+    settings.active_relay_id = profile_id;
+    switch_relay_profile(RelayProfileSwitchRequest {
+        settings,
+        previous_active_relay_id,
+    })
 }
 
 #[tauri::command]
@@ -2177,7 +2331,7 @@ fn log_relay_apply_request(
             "baseUrl": relay.base_url,
             "hasConfigContents": !relay.config_contents.trim().is_empty(),
             "hasAuthContents": !relay.auth_contents.trim().is_empty(),
-            "configContainsProxy": relay.config_contents.contains("127.0.0.1:57321")
+            "configContainsProxy": relay.config_contents.contains("127.0.0.1:58321")
         }),
     );
 }
@@ -2278,6 +2432,91 @@ fn relay_switch_mutex() -> &'static Mutex<()> {
     RELAY_SWITCH_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn quick_relay_profile(
+    token: &str,
+    relay_mode: RelayMode,
+    official_mix_api_key: bool,
+) -> RelayProfile {
+    let config_contents = quick_config_contents(QUICK_CONFIG_BASE_URL, token);
+    let auth_contents = if official_mix_api_key {
+        "{}\n".to_string()
+    } else {
+        quick_auth_contents(token)
+    };
+    RelayProfile {
+        id: QUICK_PROFILE_ID.to_string(),
+        name: QUICK_PROFILE_NAME.to_string(),
+        model: String::new(),
+        base_url: QUICK_CONFIG_BASE_URL.to_string(),
+        upstream_base_url: QUICK_CONFIG_BASE_URL.to_string(),
+        api_key: token.to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode,
+        official_mix_api_key,
+        test_model: String::new(),
+        config_contents,
+        auth_contents,
+        use_common_config: true,
+        context_selection: Default::default(),
+        context_selection_initialized: false,
+        context_window: String::new(),
+        auto_compact_limit: String::new(),
+        model_insert_mode: Default::default(),
+        model_list: String::new(),
+        user_agent: String::new(),
+    }
+}
+
+fn upsert_quick_relay_profile(settings: &mut BackendSettings, profile: RelayProfile) {
+    if let Some(existing) = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|existing| existing.id == QUICK_PROFILE_ID)
+    {
+        *existing = profile;
+    } else {
+        settings.relay_profiles.push(profile);
+    }
+}
+
+fn filter_quick_profile_models(models: Vec<String>) -> Vec<String> {
+    models
+        .into_iter()
+        .filter(|model| {
+            let normalized = model.to_lowercase();
+            normalized.contains("gpt") && !normalized.contains("image")
+        })
+        .collect()
+}
+
+fn quick_config_contents(base_url: &str, token: &str) -> String {
+    let escaped_base_url = toml_escape(base_url);
+    let escaped_token = toml_escape(token);
+    codexx_core::relay_config::normalize_config_text(&format!(
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "{escaped_base_url}"
+experimental_bearer_token = "{escaped_token}"
+"#
+    ))
+}
+
+fn quick_auth_contents(token: &str) -> String {
+    serde_json::to_string_pretty(&json!({
+        "OPENAI_API_KEY": token
+    }))
+    .map(|contents| format!("{contents}\n"))
+    .unwrap_or_else(|_| "{}\n".to_string())
+}
+
+fn toml_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn empty_context_entries() -> codexx_core::relay_config::CodexContextEntries {
     codexx_core::relay_config::CodexContextEntries {
         mcp_servers: Vec::new(),
@@ -2319,17 +2558,6 @@ fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
         Ok(contents) => Ok(contents),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(error) => Err(error.into()),
-    }
-}
-
-fn ads_payload(payload: Value) -> AdsPayload {
-    AdsPayload {
-        version: payload.get("version").and_then(Value::as_u64).unwrap_or(1),
-        ads: payload
-            .get("ads")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
     }
 }
 
@@ -2635,11 +2863,11 @@ fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
 }
 
 fn default_debug_port() -> u16 {
-    9229
+    9329
 }
 
 fn default_helper_port() -> u16 {
-    57321
+    58321
 }
 
 fn default_log_lines() -> usize {
@@ -2663,18 +2891,19 @@ mod tests {
         let result = startup_options();
 
         assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.launch_panel, startup_is_launch_panel());
     }
 
     #[test]
     fn startup_options_honors_show_update_environment() {
         unsafe {
-            std::env::set_var("CODEX_PLUS_SHOW_UPDATE", "1");
+            std::env::set_var("CODEXX_SHOW_UPDATE", "1");
         }
 
         let result = startup_options();
 
         unsafe {
-            std::env::remove_var("CODEX_PLUS_SHOW_UPDATE");
+            std::env::remove_var("CODEXX_SHOW_UPDATE");
         }
 
         assert_eq!(result.status, "ok");
@@ -2684,7 +2913,7 @@ mod tests {
     #[test]
     fn startup_options_honors_show_update_argument() {
         assert!(should_show_update(
-            ["codexx-manager.exe", "--show-update"],
+            ["codexgo-manager.exe", "--show-update"],
             None
         ));
     }
@@ -2768,7 +2997,7 @@ mod tests {
         assert_eq!(result.status, "ok");
         assert!(result.payload.configured);
         assert!(!result.payload.authenticated);
-        assert!(config.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+        assert!(config.contains(r#"base_url = "http://127.0.0.1:58321/v1""#));
         assert!(config.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
     }
 
@@ -3278,18 +3507,6 @@ model_reasoning_effort = "high"
                 .relay_context_config_contents
                 .contains("[mcp_servers.context7]")
         );
-    }
-
-    #[test]
-    fn ads_payload_keeps_version_and_ad_items() {
-        let payload = ads_payload(json!({
-            "version": 1,
-            "ads": [{"id": "ad-1", "type": "normal", "title": "Ad"}]
-        }));
-
-        assert_eq!(payload.version, 1);
-        assert_eq!(payload.ads.len(), 1);
-        assert_eq!(payload.ads[0]["id"], json!("ad-1"));
     }
 
     #[test]

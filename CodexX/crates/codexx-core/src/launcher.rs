@@ -77,8 +77,8 @@ impl Default for LaunchOptions {
     fn default() -> Self {
         Self {
             app_dir: None,
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store: StatusStore::default(),
         }
     }

@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "codexx"
+name = "codexgo"
 path = "src/main.rs"
 
 [dependencies]

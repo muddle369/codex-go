@@ -154,7 +154,7 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
 
     assert!(result.configured);
     assert_eq!(store.load().unwrap().active_relay_id, "agg");
-    assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+    assert!(live.contains(r#"base_url = "http://127.0.0.1:58321/v1""#));
 }
 
 #[test]

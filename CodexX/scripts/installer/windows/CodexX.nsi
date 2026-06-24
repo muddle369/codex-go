@@ -6,10 +6,10 @@
 !endif
 !define ROOT "..\..\.."
 
-Name "CodexX"
-OutFile "${ROOT}\dist\windows\CodexX-${VERSION}-windows-x64-setup.exe"
-InstallDir "$LOCALAPPDATA\Programs\CodexX"
-InstallDirRegKey HKCU "Software\CodexX" "InstallDir"
+Name "CodexGO"
+OutFile "${ROOT}\dist\windows\CodexGO-${VERSION}-windows-x64-setup.exe"
+InstallDir "$LOCALAPPDATA\Programs\CodexGO"
+InstallDirRegKey HKCU "Software\CodexGO" "InstallDir"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
@@ -28,54 +28,58 @@ SetCompressor /SOLID lzma
 Section "Install"
   SetOutPath "$INSTDIR"
 
-  nsExec::ExecToLog 'taskkill /IM codexx.exe /F'
+  nsExec::ExecToLog 'taskkill /IM codexgo.exe /F'
   Pop $0
-  nsExec::ExecToLog 'taskkill /IM codexx-manager.exe /F'
+  nsExec::ExecToLog 'taskkill /IM codexgo-manager.exe /F'
   Pop $0
 
-  File "${ROOT}\dist\windows\app\codexx.exe"
-  File "${ROOT}\dist\windows\app\codexx-manager.exe"
+  File "${ROOT}\dist\windows\app\codexgo.exe"
+  File "${ROOT}\dist\windows\app\codexgo-manager.exe"
+  File "${ROOT}\dist\windows\app\WebView2Loader.dll"
+  File "${ROOT}\assets\images\codex-go.ico"
+  File "${ROOT}\assets\images\tray-icon.ico"
 
-  Delete "$DESKTOP\CodexX 绠＄悊宸ュ叿.lnk"
-  Delete "$SMPROGRAMS\CodexX\CodexX 绠＄悊宸ュ叿.lnk"
+  Delete "$DESKTOP\CodexGO 绠＄悊宸ュ叿.lnk"
+  Delete "$SMPROGRAMS\CodexGO\CodexGO 绠＄悊宸ュ叿.lnk"
 
-  CreateShortcut "$DESKTOP\CodexX.lnk" "$INSTDIR\codexx.exe" "" "$INSTDIR\codexx.exe"
-  CreateShortcut "$DESKTOP\CodexX Manager.lnk" "$INSTDIR\codexx-manager.exe" "" "$INSTDIR\codexx-manager.exe"
-  CreateDirectory "$SMPROGRAMS\CodexX"
-  CreateShortcut "$SMPROGRAMS\CodexX\CodexX.lnk" "$INSTDIR\codexx.exe" "" "$INSTDIR\codexx.exe"
-  CreateShortcut "$SMPROGRAMS\CodexX\CodexX Manager.lnk" "$INSTDIR\codexx-manager.exe" "" "$INSTDIR\codexx-manager.exe"
-  CreateShortcut "$SMPROGRAMS\CodexX\卸载 CodexX.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\codexx-manager.exe"
+  CreateShortcut "$DESKTOP\CodexGO.lnk" "$INSTDIR\codexgo.exe" "" "$INSTDIR\codexgo.exe" 0
+  CreateDirectory "$SMPROGRAMS\CodexGO"
+  CreateShortcut "$SMPROGRAMS\CodexGO\CodexGO.lnk" "$INSTDIR\codexgo.exe" "" "$INSTDIR\codexgo.exe" 0
+  CreateShortcut "$SMPROGRAMS\CodexGO\卸载 CodexGO.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\codexgo.exe" 0
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
-  WriteRegStr HKCU "Software\CodexX" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX" "DisplayName" "CodexX"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX" "Publisher" "BigPizzaV3"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX" "DisplayIcon" "$INSTDIR\codexx-manager.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX" "UninstallString" "$INSTDIR\uninstall.exe"
+  WriteRegStr HKCU "Software\CodexGO" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO" "DisplayName" "CodexGO"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO" "Publisher" "BigPizzaV3"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO" "DisplayIcon" "$INSTDIR\codexgo.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO" "UninstallString" "$INSTDIR\uninstall.exe"
 SectionEnd
 
 Section "Uninstall"
-  nsExec::ExecToLog 'taskkill /IM codexx.exe /F'
+  nsExec::ExecToLog 'taskkill /IM codexgo.exe /F'
   Pop $0
-  nsExec::ExecToLog 'taskkill /IM codexx-manager.exe /F'
+  nsExec::ExecToLog 'taskkill /IM codexgo-manager.exe /F'
   Pop $0
 
-  Delete "$DESKTOP\CodexX.lnk"
-  Delete "$DESKTOP\CodexX Manager.lnk"
-  Delete "$DESKTOP\CodexX 绠＄悊宸ュ叿.lnk"
-  Delete "$SMPROGRAMS\CodexX\CodexX.lnk"
-  Delete "$SMPROGRAMS\CodexX\CodexX Manager.lnk"
-  Delete "$SMPROGRAMS\CodexX\CodexX 绠＄悊宸ュ叿.lnk"
-  Delete "$SMPROGRAMS\CodexX\卸载 CodexX.lnk"
-  RMDir "$SMPROGRAMS\CodexX"
+  Delete "$DESKTOP\CodexGO.lnk"
+  Delete "$DESKTOP\CodexGO Manager.lnk"
+  Delete "$DESKTOP\CodexGO 绠＄悊宸ュ叿.lnk"
+  Delete "$SMPROGRAMS\CodexGO\CodexGO.lnk"
+  Delete "$SMPROGRAMS\CodexGO\CodexGO Manager.lnk"
+  Delete "$SMPROGRAMS\CodexGO\CodexGO 绠＄悊宸ュ叿.lnk"
+  Delete "$SMPROGRAMS\CodexGO\卸载 CodexGO.lnk"
+  RMDir "$SMPROGRAMS\CodexGO"
 
-  Delete "$INSTDIR\codexx.exe"
-  Delete "$INSTDIR\codexx-manager.exe"
+  Delete "$INSTDIR\codexgo.exe"
+  Delete "$INSTDIR\codexgo-manager.exe"
+  Delete "$INSTDIR\WebView2Loader.dll"
+  Delete "$INSTDIR\codex-go.ico"
+  Delete "$INSTDIR\tray-icon.ico"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX"
-  DeleteRegKey HKCU "Software\CodexX"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO"
+  DeleteRegKey HKCU "Software\CodexGO"
 SectionEnd

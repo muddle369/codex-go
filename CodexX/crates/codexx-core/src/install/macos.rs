@@ -12,7 +12,7 @@ use super::{
 pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
     let install_root = install_root_or_default(options);
     let display_name = if manager { MANAGER_NAME } else { SILENT_NAME };
-    let executable_name = if manager { "CodexXManager" } else { "CodexX" };
+    let executable_name = if manager { "CodexGOManager" } else { crate::brand::PRODUCT_NAME };
     let binary = if manager {
         MANAGER_BINARY
     } else {
@@ -64,7 +64,7 @@ fn is_bundle_executable_target(target: &Path, executable_name: &str) -> bool {
 #[cfg(target_os = "macos")]
 pub fn install_app_bundles(options: &InstallOptions) -> anyhow::Result<()> {
     write_bundle(&build_app_bundle(options, false))?;
-    write_bundle(&build_app_bundle(options, true))?;
+    remove_legacy_manager_app_bundle(options)?;
     Ok(())
 }
 
@@ -76,6 +76,16 @@ pub fn uninstall_app_bundles(options: &InstallOptions) -> anyhow::Result<()> {
         if app.exists() {
             fs::remove_dir_all(app)?;
         }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn remove_legacy_manager_app_bundle(options: &InstallOptions) -> anyhow::Result<()> {
+    let install_root = install_root_or_default(options);
+    let app = install_root.join(format!("{MANAGER_NAME}.app"));
+    if app.exists() {
+        fs::remove_dir_all(app)?;
     }
     Ok(())
 }
@@ -123,9 +133,9 @@ fn copy_icon(resources: &Path) -> anyhow::Result<()> {
     let source = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("codexx.png"));
+        .map(|path| path.join("codex-go.png"));
     if let Some(source) = source.filter(|path| path.exists()) {
-        fs::copy(source, resources.join("codexx.png"))?;
+        fs::copy(source, resources.join("codex-go.png"))?;
     }
     Ok(())
 }
@@ -137,7 +147,7 @@ fn executable_name_from_plist(plist: &str) -> String {
         .nth(1)
         .and_then(|tail| tail.split("<string>").nth(1))
         .and_then(|tail| tail.split("</string>").next())
-        .unwrap_or("CodexX")
+        .unwrap_or(crate::brand::PRODUCT_NAME)
         .to_string()
 }
 
@@ -153,7 +163,7 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
   <key>CFBundleDisplayName</key>
   <string>{display_name}</string>
   <key>CFBundleIdentifier</key>
-  <string>com.muddle369.codexx{identifier_suffix}</string>
+  <string>com.muddle369.codexgo{identifier_suffix}</string>
   <key>CFBundleVersion</key>
   <string>{version}</string>
   <key>CFBundleShortVersionString</key>
@@ -163,7 +173,7 @@ fn info_plist(display_name: &str, executable_name: &str, identifier_suffix: &str
   <key>CFBundleExecutable</key>
   <string>{executable_name}</string>
   <key>CFBundleIconFile</key>
-  <string>codexx.png</string>
+  <string>codex-go.png</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>

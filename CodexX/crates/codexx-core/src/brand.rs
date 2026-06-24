@@ -1,0 +1,14 @@
+pub const PRODUCT_NAME: &str = "CodexGO";
+pub const WINDOW_TITLE: &str = PRODUCT_NAME;
+pub const APP_BUNDLE_NAME: &str = PRODUCT_NAME;
+pub const APP_BUNDLE_FILE_NAME: &str = "CodexGO.app";
+pub const WINDOWS_SHORTCUT_NAME: &str = "CodexGO.lnk";
+pub const LEGACY_MANAGER_APP_NAME: &str = "CodexX Manager";
+pub const LAUNCHER_BINARY: &str = "codexgo";
+pub const MANAGER_BINARY: &str = "codexgo-manager";
+pub const GITHUB_REPO: &str = "muddle369/codex-go";
+pub const GITHUB_URL: &str = "https://github.com/muddle369/codex-go";
+pub const QUICK_PROVIDER_NAME: &str = "SCD_Ai";
+pub const OFFICIAL_RELAY_NAME: &str = "007ai.cc";
+pub const OFFICIAL_RELAY_URL: &str = "https://007.007ai.cc";
+pub const OFFICIAL_RELAY_BASE_URL: &str = "https://007.007ai.cc/v1";

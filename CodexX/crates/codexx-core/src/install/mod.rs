@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 pub mod macos;
 pub mod windows;
 
-pub const SILENT_NAME: &str = "CodexX";
-pub const MANAGER_NAME: &str = "CodexX Manager";
-pub const SILENT_BINARY: &str = "codexx";
-pub const MANAGER_BINARY: &str = "codexx-manager";
+pub const SILENT_NAME: &str = crate::brand::APP_BUNDLE_NAME;
+pub const MANAGER_NAME: &str = crate::brand::LEGACY_MANAGER_APP_NAME;
+pub const SILENT_BINARY: &str = crate::brand::LAUNCHER_BINARY;
+pub const MANAGER_BINARY: &str = crate::brand::MANAGER_BINARY;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -72,11 +72,11 @@ impl ShortcutState {
 }
 
 pub fn shortcut_names() -> (&'static str, &'static str) {
-    ("CodexX.lnk", "CodexX Manager.lnk")
+    (crate::brand::WINDOWS_SHORTCUT_NAME, "")
 }
 
 pub fn app_bundle_names() -> (&'static str, &'static str) {
-    ("CodexX.app", "CodexX Manager.app")
+    (crate::brand::APP_BUNDLE_FILE_NAME, "")
 }
 
 pub fn inspect_entrypoints() -> EntryPointState {
@@ -175,7 +175,7 @@ fn platform_install(options: &InstallOptions) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
-        anyhow::bail!("当前平台暂不支持安装 CodexX 入口")
+        anyhow::bail!("当前平台暂不支持安装 {} 入口", crate::brand::PRODUCT_NAME)
     }
 }
 
@@ -193,7 +193,7 @@ fn platform_uninstall(options: &InstallOptions) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
-        anyhow::bail!("当前平台暂不支持卸载 CodexX 入口")
+        anyhow::bail!("当前平台暂不支持卸载 {} 入口", crate::brand::PRODUCT_NAME)
     }
 }
 
@@ -216,6 +216,9 @@ fn action_result(result: anyhow::Result<()>, success_message: &str) -> InstallAc
 }
 
 fn entrypoint_candidates(root: &Option<PathBuf>, manager: bool) -> Vec<PathBuf> {
+    if manager {
+        return Vec::new();
+    }
     let Some(root) = root else {
         return Vec::new();
     };
@@ -245,16 +248,16 @@ pub fn companion_binary_path(binary: &str) -> PathBuf {
 pub fn companion_binary_path_from_exe(exe: &Path, binary: &str) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
     let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let same_bundle = dir.join(format!("{binary}{suffix}"));
+    if same_bundle.exists() {
+        return same_bundle;
+    }
     if binary == SILENT_BINARY {
         if let Some(sibling_app_binary) = macos_silent_app_binary_from_exe(exe) {
             return sibling_app_binary;
         }
-        let same_bundle = dir.join(binary);
-        if same_bundle.exists() {
-            return same_bundle;
-        }
     }
-    dir.join(format!("{binary}{suffix}"))
+    same_bundle
 }
 
 fn macos_silent_app_binary_from_exe(exe: &Path) -> Option<PathBuf> {
@@ -263,7 +266,7 @@ fn macos_silent_app_binary_from_exe(exe: &Path) -> Option<PathBuf> {
             .join(format!("{SILENT_NAME}.app"))
             .join("Contents")
             .join("MacOS")
-            .join("CodexX")
+            .join(crate::brand::APP_BUNDLE_NAME)
     })
 }
 

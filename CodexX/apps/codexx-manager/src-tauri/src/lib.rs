@@ -1,16 +1,15 @@
 pub mod commands;
 pub mod install;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WindowEvent};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-
-static APP_EXITING: AtomicBool = AtomicBool::new(false);
-const TRAY_MENU_SHOW: &str = "tray_show_main";
-const TRAY_MENU_QUIT: &str = "tray_quit_app";
+use tauri::{
+    image::Image,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    RunEvent, WindowEvent,
+};
+const TRAY_MENU_HIDE: &str = "tray-hide";
+const TRAY_MENU_QUICK_LAUNCH: &str = "tray-quick-launch";
+const TRAY_MENU_QUIT: &str = "tray-quit";
 
 pub fn run() {
     install_panic_logger();
@@ -20,31 +19,39 @@ pub fn run() {
             "version": env!("CARGO_PKG_VERSION")
         }),
     );
-    let Some(_guard) = acquire_single_instance_guard() else {
-        return;
-    };
     let show_update = commands::startup_should_show_update();
+    let first_run = commands::startup_is_first_run();
+    let launch_panel = commands::startup_is_launch_panel();
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = commands::show_main_window(app.clone());
+        }))
         .setup(move |app| {
-            let url = if show_update {
+            let url = if launch_panel {
+                "index.html?launchPanel=1"
+            } else if first_run {
+                "index.html?firstRun=1"
+            } else if show_update {
                 "index.html?showUpdate=1"
             } else {
                 "index.html"
             };
             let main_window =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                    .title("CodexX Manager")
+                    .title(codexx_core::brand::WINDOW_TITLE)
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0)
                     .build()?;
-            install_tray(app)?;
-            register_main_window_events(main_window, app.handle().clone());
+            register_main_window_events(main_window);
+            configure_tray(app.handle().clone())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::backend_version,
             commands::startup_options,
+            commands::show_main_window,
+            commands::hide_main_window,
             commands::load_overview,
             commands::launch_codex_plus,
             commands::restart_codex_plus,
@@ -57,7 +64,6 @@ pub fn run() {
             commands::delete_local_session,
             commands::load_provider_sync_targets,
             commands::sync_providers_now,
-            commands::load_ads,
             commands::refresh_script_market,
             commands::install_market_script,
             commands::set_user_script_enabled,
@@ -94,11 +100,21 @@ pub fn run() {
             commands::test_relay_profile,
             commands::fetch_relay_profile_models,
             commands::switch_relay_profile,
+            commands::quick_configure_token,
+            commands::quick_switch_profile,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!())
+        .map(|app| {
+            app.run(|app_handle, event| {
+                #[cfg(target_os = "macos")]
+                if matches!(event, RunEvent::Reopen { .. }) {
+                    let _ = commands::show_main_window(app_handle.clone());
+                }
+            });
+        });
     if let Err(error) = run_result {
         let _ = codexx_core::diagnostic_log::append_diagnostic_log(
             "manager.run_failed",
@@ -109,54 +125,81 @@ pub fn run() {
     }
 }
 
-fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, TRAY_MENU_SHOW, "显示主窗口", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT, "退出程序", true, None::<&str>)?;
-    let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
-
-    let mut tray_builder = TrayIconBuilder::new()
-        .menu(&tray_menu)
+fn configure_tray(app: tauri::AppHandle) -> tauri::Result<()> {
+    let app_for_tray = app.clone();
+    let menu = build_tray_menu(&app)?;
+    let tray_icon = tray_icon_image(&app)?;
+    let builder = TrayIconBuilder::with_id("main-tray")
+        .icon(tray_icon)
+        .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            TRAY_MENU_SHOW => {
-                show_main_window(app);
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_MENU_HIDE => {
+                let _ = commands::hide_main_window(app.clone());
+            }
+            TRAY_MENU_QUICK_LAUNCH => {
+                let _ = commands::show_main_window(app.clone());
             }
             TRAY_MENU_QUIT => {
-                APP_EXITING.store(true, Ordering::SeqCst);
                 app.exit(0);
             }
             _ => {}
         })
-        .on_tray_icon_event(|tray, event| match event {
-            TrayIconEvent::Click {
+        .on_tray_icon_event(move |_tray, event| {
+            if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
+            } = event
+            {
+                let _ = commands::show_main_window(app_for_tray.clone());
             }
-            | TrayIconEvent::DoubleClick {
-                button: MouseButton::Left,
-                ..
-            } => {
-                show_main_window(&tray.app_handle());
-            }
-            _ => {}
         });
 
-    if let Some(icon) = app.default_window_icon().cloned() {
-        tray_builder = tray_builder.icon(icon);
-    }
+    #[cfg(target_os = "macos")]
+    let builder = builder.icon_as_template(true);
 
-    let _ = tray_builder.build(app)?;
+    builder.build(&app)?;
     Ok(())
+}
+
+fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let quick_launch_item =
+        MenuItem::with_id(app, TRAY_MENU_QUICK_LAUNCH, "打开启动面板", true, None::<&str>)?;
+    let hide_item = MenuItem::with_id(app, TRAY_MENU_HIDE, "隐藏启动面板", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT, "退出", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    Menu::with_items(
+        app,
+        &[
+            &quick_launch_item,
+            &hide_item,
+            &separator,
+            &quit_item,
+        ],
+    )
+}
+
+fn tray_icon_image<'a>(app: &'a tauri::AppHandle) -> tauri::Result<Image<'a>> {
+    #[cfg(target_os = "macos")]
+    if let Ok(image) = Image::from_bytes(include_bytes!("../../../../assets/images/tray-template.png")) {
+        return Ok(image);
+    }
+    #[cfg(windows)]
+    if let Ok(image) = Image::from_bytes(include_bytes!("../../../../assets/images/tray-icon.ico")) {
+        return Ok(image);
+    }
+    Ok(app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("缺少默认窗口图标"))?)
 }
 
 fn register_main_window_events<R: tauri::Runtime>(
     window: tauri::WebviewWindow<R>,
-    app_handle: tauri::AppHandle<R>,
 ) {
     let event_window = window.clone();
-    let dialog_window = window.clone();
-    let dialog_app_handle = app_handle.clone();
+    let close_window = event_window.clone();
     let minimized_window = event_window.clone();
 
     event_window.on_window_event(move |event| match event {
@@ -166,41 +209,11 @@ fn register_main_window_events<R: tauri::Runtime>(
             }
         }
         WindowEvent::CloseRequested { api, .. } => {
-            if APP_EXITING.load(Ordering::SeqCst) {
-                return;
-            }
-
             api.prevent_close();
-            let app_for_decision = dialog_app_handle.clone();
-            let window_for_decision = dialog_window.clone();
-            dialog_app_handle
-                .dialog()
-                .message("要退出 CodexX Manager，还是最小化到系统托盘？")
-                .title("关闭确认")
-                .kind(MessageDialogKind::Info)
-                .buttons(MessageDialogButtons::OkCancelCustom(
-                    "退出程序".into(),
-                    "最小化到托盘".into(),
-                ))
-                .show(move |should_exit| {
-                    if should_exit {
-                        APP_EXITING.store(true, Ordering::SeqCst);
-                        app_for_decision.exit(0);
-                    } else {
-                        let _ = window_for_decision.hide();
-                    }
-                });
+            let _ = close_window.hide();
         }
         _ => {}
     });
-}
-
-fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
-    if let Some(window) = app_handle.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
 }
 
 fn install_panic_logger() {
@@ -226,62 +239,4 @@ fn install_panic_logger() {
             }),
         );
     }));
-}
-
-fn acquire_single_instance_guard() -> Option<codexx_core::ports::LoopbackPortGuard> {
-    match codexx_core::ports::acquire_resilient_loopback_port_guard(
-        codexx_core::ports::MANAGER_GUARD_PORT,
-    ) {
-        Ok(guard) => {
-            if let Some(fallback_lock_path) = guard.fallback_path() {
-                let _ = codexx_core::diagnostic_log::append_diagnostic_log(
-                    "manager.guard_fallback",
-                    serde_json::json!({
-                        "requested_guard_port": codexx_core::ports::MANAGER_GUARD_PORT,
-                        "fallback_lock_path": fallback_lock_path
-                    }),
-                );
-            }
-            Some(guard)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-            let _ = codexx_core::diagnostic_log::append_diagnostic_log(
-                "manager.already_running",
-                serde_json::json!({
-                    "guard_port": codexx_core::ports::MANAGER_GUARD_PORT
-                }),
-            );
-            None
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-            let _ = codexx_core::diagnostic_log::append_diagnostic_log(
-                "manager.already_running",
-                serde_json::json!({
-                    "guard_port": codexx_core::ports::MANAGER_GUARD_PORT
-                }),
-            );
-            None
-        }
-        Err(error) => {
-            let _ = codexx_core::diagnostic_log::append_diagnostic_log(
-                "manager.guard_failed",
-                serde_json::json!({
-                    "guard_port": codexx_core::ports::MANAGER_GUARD_PORT,
-                    "error": error.to_string()
-                }),
-            );
-            match std::net::TcpListener::bind(("127.0.0.1", 0)) {
-                Ok(listener) => Some(codexx_core::ports::LoopbackPortGuard::listener(listener)),
-                Err(fallback_error) => {
-                    let _ = codexx_core::diagnostic_log::append_diagnostic_log(
-                        "manager.guard_fallback_failed",
-                        serde_json::json!({
-                            "error": fallback_error.to_string()
-                        }),
-                    );
-                    None
-                }
-            }
-        }
-    }
 }

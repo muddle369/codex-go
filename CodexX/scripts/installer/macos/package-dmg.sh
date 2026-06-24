@@ -7,16 +7,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DIST="$ROOT/dist/macos"
 STAGE="$DIST/stage"
 BINARY_DIR="${BINARY_DIR:-$ROOT/target/release}"
-DMG="$DIST/CodexX-${VERSION}-macos-${ARCH}.dmg"
+DMG="$DIST/CodexGO-${VERSION}-macos-${ARCH}.dmg"
 ICON_SOURCE="$ROOT/apps/codexx-manager/src-tauri/icons/icon.png"
-ICON_NAME="codexx.icns"
+TRAY_TEMPLATE_SOURCE="$ROOT/assets/images/tray-template.png"
+TRAY_ICON_SOURCE="$ROOT/assets/images/tray-icon.ico"
+ICON_NAME="codexgo.icns"
 ICON_ICNS="$DIST/$ICON_NAME"
 
 rm -rf "$DIST"
 mkdir -p "$STAGE"
 
 prepare_icon() {
-  local iconset="$DIST/codexx.iconset"
+  local iconset="$DIST/codexgo.iconset"
   rm -rf "$iconset"
   mkdir -p "$iconset"
 
@@ -31,7 +33,10 @@ prepare_icon() {
   sips -z 512 512 "$ICON_SOURCE" --out "$iconset/icon_512x512.png" >/dev/null
   sips -z 1024 1024 "$ICON_SOURCE" --out "$iconset/icon_512x512@2x.png" >/dev/null
 
-  iconutil -c icns "$iconset" -o "$ICON_ICNS"
+  if ! iconutil -c icns "$iconset" -o "$ICON_ICNS"; then
+    echo "warning: iconutil failed, falling back to PNG icon for test packaging" >&2
+    cp "$ICON_SOURCE" "$ICON_ICNS"
+  fi
 }
 
 create_app() {
@@ -51,6 +56,8 @@ create_app() {
   mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
   cp "$binary_path" "$app_dir/Contents/MacOS/$executable_name"
   cp "$ICON_ICNS" "$app_dir/Contents/Resources/$ICON_NAME"
+  [ -f "$TRAY_TEMPLATE_SOURCE" ] && cp "$TRAY_TEMPLATE_SOURCE" "$app_dir/Contents/Resources/tray-template.png"
+  [ -f "$TRAY_ICON_SOURCE" ] && cp "$TRAY_ICON_SOURCE" "$app_dir/Contents/Resources/tray-icon.ico"
   chmod +x "$app_dir/Contents/MacOS/$executable_name"
   printf 'APPL????' > "$app_dir/Contents/PkgInfo"
   cat > "$app_dir/Contents/Info.plist" <<PLIST
@@ -89,10 +96,28 @@ create_app() {
 PLIST
 }
 
+copy_companion_binary() {
+  local app_dir="$1"
+  local binary_path="$2"
+  local executable_name="$3"
+
+  if [ ! -x "$binary_path" ]; then
+    echo "error: companion binary not found or not executable: $binary_path" >&2
+    return 1
+  fi
+
+  cp "$binary_path" "$app_dir/Contents/MacOS/$executable_name"
+  chmod +x "$app_dir/Contents/MacOS/$executable_name"
+}
+
 sign_app() {
   local app_dir="$1"
   local executable
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_dir/Contents/Info.plist")"
+  while IFS= read -r binary; do
+    [ "$(basename "$binary")" = "$executable" ] && continue
+    codesign --force --sign - "$binary"
+  done < <(find "$app_dir/Contents/MacOS" -type f -perm -111)
   codesign --force --sign - "$app_dir/Contents/MacOS/$executable"
   codesign --force --sign - "$app_dir"
 }
@@ -118,16 +143,14 @@ verify_app() {
 }
 
 prepare_icon
-create_app "CodexX" "CodexX" "$BINARY_DIR/codexx" "com.muddle369.codexx" "true"
-create_app "CodexX Manager" "CodexXManager" "$BINARY_DIR/codexx-manager" "com.muddle369.codexx.manager" "false"
+create_app "CodexGO" "CodexGO" "$BINARY_DIR/codexgo" "com.muddle369.codexgo" "true"
+copy_companion_binary "$STAGE/CodexGO.app" "$BINARY_DIR/codexgo-manager" "codexgo-manager"
 
-sign_app "$STAGE/CodexX.app"
-sign_app "$STAGE/CodexX Manager.app"
+sign_app "$STAGE/CodexGO.app"
 
-verify_app "$STAGE/CodexX.app"
-verify_app "$STAGE/CodexX Manager.app"
+verify_app "$STAGE/CodexGO.app"
 
 ln -s /Applications "$STAGE/Applications"
 
-hdiutil create -volname "CodexX" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+hdiutil create -volname "CodexGO" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 echo "$DMG"

@@ -174,6 +174,8 @@ pub enum RelayMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
+    #[serde(rename = "setupCompleted", default)]
+    pub setup_completed: bool,
     #[serde(rename = "codexAppPath", default)]
     pub codex_app_path: String,
     #[serde(rename = "codexExtraArgs", default)]
@@ -277,6 +279,7 @@ pub struct BackendSettings {
 impl Default for BackendSettings {
     fn default() -> Self {
         Self {
+            setup_completed: false,
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
@@ -524,6 +527,18 @@ impl Default for SettingsStore {
 impl SettingsStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn setup_completed(&self) -> bool {
+        self.path.exists()
+            && self
+                .load()
+                .map(|settings| settings.setup_completed)
+                .unwrap_or(false)
     }
 
     pub fn load(&self) -> anyhow::Result<BackendSettings> {
@@ -1174,7 +1189,7 @@ model_provider = "custom"
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "http://127.0.0.1:57321/v1"
+base_url = "http://127.0.0.1:58321/v1"
 "#
                 .to_string(),
                 auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
@@ -1815,6 +1830,26 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(saved["providerSyncEnabled"], json!(true));
         assert_eq!(saved["codexExtraArgs"], Value::Null);
         assert_eq!(saved["customField"], json!({"nested": true}));
+    }
+
+    #[test]
+    fn settings_store_setup_completed_requires_existing_true_flag() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+
+        assert!(!store.setup_completed());
+
+        store.save(&BackendSettings::default()).unwrap();
+        assert!(!store.setup_completed());
+
+        let completed = BackendSettings {
+            setup_completed: true,
+            ..BackendSettings::default()
+        };
+        store.save(&completed).unwrap();
+
+        assert!(store.setup_completed());
     }
 
     #[test]

@@ -22,13 +22,13 @@ fn manager_release_binary_uses_embedded_frontend_assets() {
 }
 
 #[test]
-fn manager_uses_single_instance_guard_before_starting_tauri() {
+fn manager_uses_single_instance_plugin_and_tray_before_starting_tauri() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");
 
-    assert!(lib_rs.contains("acquire_single_instance_guard()"));
-    assert!(lib_rs.contains("MANAGER_GUARD_PORT"));
-    assert!(lib_rs.contains("manager.already_running"));
+    assert!(lib_rs.contains("tauri_plugin_single_instance::init"));
+    assert!(lib_rs.contains("TrayIconBuilder::with_id(\"main-tray\")"));
+    assert!(lib_rs.contains("register_main_window_events(main_window)"));
 }
 
 #[test]
@@ -99,12 +99,12 @@ fn macos_packager_hides_silent_launcher_but_not_manager() {
     assert!(script.contains("<key>LSUIElement</key>"));
     assert!(script.contains("ARCH=\"${2:-$(uname -m)}\""));
     assert!(script.contains("BINARY_DIR=\"${BINARY_DIR:-$ROOT/target/release}\""));
-    assert!(script.contains("CodexX-${VERSION}-macos-${ARCH}.dmg"));
+    assert!(script.contains("CodexGO-${VERSION}-macos-${ARCH}.dmg"));
     assert!(script.contains(
-        "create_app \"CodexX\" \"CodexX\" \"$BINARY_DIR/codexx\" \"com.muddle369.codexx\" \"true\""
+        "create_app \"CodexGO\" \"CodexGO\" \"$BINARY_DIR/codexgo\" \"com.muddle369.codexgo\" \"true\""
     ));
     assert!(script.contains(
-        "create_app \"CodexX Manager\" \"CodexXManager\" \"$BINARY_DIR/codexx-manager\" \"com.muddle369.codexx.manager\" \"false\""
+        "copy_companion_binary \"$STAGE/CodexGO.app\" \"$BINARY_DIR/codexgo-manager\" \"codexgo-manager\""
     ));
 }
 

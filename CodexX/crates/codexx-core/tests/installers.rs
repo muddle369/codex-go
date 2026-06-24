@@ -5,23 +5,21 @@ use codexx_core::install::{
 };
 
 #[test]
-fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
+fn windows_entrypoint_plan_contains_single_visible_entrypoint_and_manager_sidecar() {
     let options = InstallOptions {
         install_root: Some("C:/Users/A/Desktop".into()),
-        launcher_path: Some("C:/Tools/codexx.exe".into()),
-        manager_path: Some("C:/Tools/codexx-manager.exe".into()),
+        launcher_path: Some("C:/Tools/codexgo.exe".into()),
+        manager_path: Some("C:/Tools/codexgo-manager.exe".into()),
         remove_owned_data: false,
     };
 
     let plan = build_windows_entrypoint_plan(&options);
 
-    assert!(plan.silent_shortcut.ends_with("CodexX.lnk"));
-    assert!(plan.manager_shortcut.ends_with("CodexX Manager.lnk"));
-    assert_eq!(plan.launcher_path, "C:/Tools/codexx.exe");
-    assert_eq!(plan.manager_path, "C:/Tools/codexx-manager.exe");
-    assert_eq!(plan.silent_icon_path, "C:/Tools/codexx.exe");
-    assert_eq!(plan.manager_icon_path, "C:/Tools/codexx-manager.exe");
-    assert_eq!(plan.uninstall_key, "CodexX");
+    assert!(plan.silent_shortcut.ends_with("CodexGO.lnk"));
+    assert_eq!(plan.launcher_path, "C:/Tools/codexgo.exe");
+    assert_eq!(plan.manager_path, "C:/Tools/codexgo-manager.exe");
+    assert_eq!(plan.silent_icon_path, "C:/Tools/codexgo.exe");
+    assert_eq!(plan.uninstall_key, "CodexGO");
     assert_eq!(plan.legacy_uninstall_key, "CodexX");
     assert_eq!(
         plan.uninstaller_path.replace('\\', "/"),
@@ -35,7 +33,7 @@ fn windows_entrypoint_plan_contains_silent_and_manager_entrypoints() {
         plan.quiet_uninstall_command.replace('\\', "/"),
         "\"C:/Tools/uninstall.exe\" /S"
     );
-    assert_ne!(plan.uninstall_command, "\"C:/Tools/codexx-manager.exe\"");
+    assert_ne!(plan.uninstall_command, "\"C:/Tools/codexgo-manager.exe\"");
 }
 
 #[test]
@@ -49,39 +47,30 @@ fn windows_entrypoint_plan_can_request_owned_data_removal_without_shell_script()
 
     let plan = build_windows_entrypoint_plan(&options);
 
-    assert!(plan.silent_shortcut.ends_with("CodexX.lnk"));
-    assert!(plan.manager_shortcut.ends_with("CodexX Manager.lnk"));
+    assert!(plan.silent_shortcut.ends_with("CodexGO.lnk"));
     assert!(plan.remove_owned_data);
 }
 
 #[test]
-fn macos_bundle_metadata_contains_silent_and_manager_apps() {
+fn macos_bundle_metadata_uses_single_visible_app_with_manager_sidecar() {
     let options = InstallOptions {
         install_root: Some("/Applications".into()),
-        launcher_path: Some("/opt/CodexX/codexx".into()),
-        manager_path: Some("/opt/CodexX/codexx-manager".into()),
+        launcher_path: Some("/opt/CodexGO/codexgo".into()),
+        manager_path: Some("/opt/CodexGO/codexgo-manager".into()),
         remove_owned_data: false,
     };
 
     let silent = build_macos_app_bundle(&options, false);
-    let manager = build_macos_app_bundle(&options, true);
 
-    assert!(silent.app_path.ends_with("CodexX.app"));
-    assert!(manager.app_path.ends_with("CodexX Manager.app"));
-    assert!(silent.info_plist.contains("<string>CodexX</string>"));
-    assert!(
-        manager
-            .info_plist
-            .contains("<string>CodexX Manager</string>")
-    );
-    assert!(silent.launch_script.contains("codexx"));
-    assert!(manager.launch_script.contains("codexx-manager"));
+    assert!(silent.app_path.ends_with("CodexGO.app"));
+    assert!(silent.info_plist.contains("<string>CodexGO</string>"));
+    assert!(silent.launch_script.contains("codexgo"));
 }
 
 #[test]
-fn installer_exports_expected_two_entrypoint_names() {
-    assert_eq!(shortcut_names(), ("CodexX.lnk", "CodexX Manager.lnk"));
-    assert_eq!(app_bundle_names(), ("CodexX.app", "CodexX Manager.app"));
+fn installer_exports_expected_single_entrypoint_name() {
+    assert_eq!(shortcut_names(), ("CodexGO.lnk", ""));
+    assert_eq!(app_bundle_names(), ("CodexGO.app", ""));
 }
 
 #[test]
@@ -93,19 +82,15 @@ fn macos_dmg_includes_applications_shortcut_for_drag_install() {
 }
 
 #[test]
-fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
+fn companion_binary_path_prefers_same_app_sidecar() {
     let manager_exe =
-        std::path::Path::new("/Applications/CodexX Manager.app/Contents/MacOS/CodexXManager");
+        std::path::Path::new("/Applications/CodexGO.app/Contents/MacOS/codexgo-manager");
 
     let companion = companion_binary_path_from_exe(manager_exe, SILENT_BINARY);
 
     assert_eq!(
         companion,
-        std::path::PathBuf::from("/Applications/CodexX.app/Contents/MacOS/CodexX")
-    );
-    assert_ne!(
-        companion,
-        std::path::PathBuf::from("/Applications/CodexX Manager.app/Contents/MacOS/codexx")
+        std::path::PathBuf::from("/Applications/CodexGO.app/Contents/MacOS/CodexGO")
     );
 }
 
@@ -113,18 +98,15 @@ fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
 fn macos_bundle_does_not_wrap_the_bundle_executable_in_itself() {
     let options = InstallOptions {
         install_root: Some("/Applications".into()),
-        launcher_path: Some("/Applications/CodexX.app/Contents/MacOS/CodexX".into()),
-        manager_path: Some("/Applications/CodexX Manager.app/Contents/MacOS/CodexXManager".into()),
+        launcher_path: Some("/Applications/CodexGO.app/Contents/MacOS/CodexGO".into()),
+        manager_path: Some("/Applications/CodexGO.app/Contents/MacOS/codexgo-manager".into()),
         remove_owned_data: false,
     };
 
     let silent = build_macos_app_bundle(&options, false);
-    let manager = build_macos_app_bundle(&options, true);
 
-    assert!(!silent.launch_script.contains("CodexX\""));
-    assert!(!manager.launch_script.contains("CodexXManager\""));
-    assert!(silent.launch_script.contains("codexx"));
-    assert!(manager.launch_script.contains("codexx-manager"));
+    assert!(!silent.launch_script.contains("CodexGO\""));
+    assert!(silent.launch_script.contains("codexgo"));
 }
 
 #[test]

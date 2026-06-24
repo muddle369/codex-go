@@ -1,23 +1,18 @@
 use std::path::{Path, PathBuf};
 
-use super::{
-    InstallOptions, MANAGER_BINARY, MANAGER_NAME, SILENT_BINARY, SILENT_NAME,
-    install_root_or_default, option_or_current_exe,
-};
+use super::{InstallOptions, MANAGER_BINARY, SILENT_BINARY, install_root_or_default, option_or_current_exe};
 
-const UNINSTALL_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX";
+const UNINSTALL_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO";
 const LEGACY_UNINSTALL_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsEntrypointPlan {
     pub install_root: String,
     pub silent_shortcut: String,
-    pub manager_shortcut: String,
     pub launcher_path: String,
     pub manager_path: String,
     pub icon_path: String,
     pub silent_icon_path: String,
-    pub manager_icon_path: String,
     pub uninstaller_path: String,
     pub uninstall_command: String,
     pub quiet_uninstall_command: String,
@@ -40,11 +35,7 @@ pub fn build_windows_entrypoint_plan(options: &InstallOptions) -> WindowsEntrypo
     let quiet_uninstall_command = format!("{uninstall_command} /S");
     WindowsEntrypointPlan {
         silent_shortcut: install_root
-            .join("CodexX.lnk")
-            .to_string_lossy()
-            .to_string(),
-        manager_shortcut: install_root
-            .join("CodexX Manager.lnk")
+            .join(crate::brand::WINDOWS_SHORTCUT_NAME)
             .to_string_lossy()
             .to_string(),
         install_root: install_root.to_string_lossy().to_string(),
@@ -52,11 +43,10 @@ pub fn build_windows_entrypoint_plan(options: &InstallOptions) -> WindowsEntrypo
         manager_path: manager_path.to_string_lossy().to_string(),
         icon_path: icon_path.to_string_lossy().to_string(),
         silent_icon_path: launcher_path.to_string_lossy().to_string(),
-        manager_icon_path: manager_path.to_string_lossy().to_string(),
         uninstaller_path: uninstaller_path.to_string_lossy().to_string(),
         uninstall_command,
         quiet_uninstall_command,
-        uninstall_key: "CodexX".to_string(),
+        uninstall_key: crate::brand::PRODUCT_NAME.to_string(),
         legacy_uninstall_key: "CodexX".to_string(),
         remove_owned_data: options.remove_owned_data,
     }
@@ -70,15 +60,10 @@ pub fn install_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     create_entrypoint_shortcut(
         PathBuf::from(&plan.silent_shortcut),
         PathBuf::from(&plan.launcher_path),
-        "Launch CodexX silently",
+        &format!("Launch {} silently", crate::brand::PRODUCT_NAME),
         PathBuf::from(&plan.silent_icon_path),
     )?;
-    create_entrypoint_shortcut(
-        PathBuf::from(&plan.manager_shortcut),
-        PathBuf::from(&plan.manager_path),
-        "Open CodexX management tool",
-        PathBuf::from(&plan.manager_icon_path),
-    )?;
+    remove_legacy_manager_shortcuts(&install_root);
     write_uninstall_registration(&plan)?;
     Ok(())
 }
@@ -86,11 +71,19 @@ pub fn install_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
 #[cfg(windows)]
 pub fn uninstall_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     let plan = build_windows_entrypoint_plan(options);
+    let install_root = PathBuf::from(&plan.install_root);
     let _ = std::fs::remove_file(&plan.silent_shortcut);
-    let _ = std::fs::remove_file(&plan.manager_shortcut);
+    remove_legacy_manager_shortcuts(&install_root);
     let _ = crate::windows_integration::delete_current_user_key(LEGACY_UNINSTALL_SUBKEY);
     let _ = crate::windows_integration::delete_current_user_key(UNINSTALL_SUBKEY);
     Ok(())
+}
+
+#[cfg(windows)]
+fn remove_legacy_manager_shortcuts(install_root: &Path) {
+    for name in ["CodexGO Manager.lnk", "CodexGO 管理工具.lnk", "CodexX Manager.lnk", "CodexX 管理工具.lnk", "CodexX 绠＄悊宸ュ叿.lnk"] {
+        let _ = std::fs::remove_file(install_root.join(name));
+    }
 }
 
 #[cfg(not(windows))]
@@ -131,10 +124,10 @@ fn write_uninstall_registration(plan: &WindowsEntrypointPlan) -> anyhow::Result<
         .to_string_lossy()
         .to_string();
     for (name, value) in [
-        ("DisplayName", "CodexX".to_string()),
+        ("DisplayName", crate::brand::PRODUCT_NAME.to_string()),
         ("DisplayVersion", crate::version::VERSION.to_string()),
         ("Publisher", "BigPizzaV3".to_string()),
-        ("DisplayIcon", plan.manager_icon_path.clone()),
+        ("DisplayIcon", plan.silent_icon_path.clone()),
         ("InstallLocation", install_location),
         ("UninstallString", plan.uninstall_command.clone()),
         ("QuietUninstallString", plan.quiet_uninstall_command.clone()),
@@ -148,11 +141,11 @@ fn default_icon_path() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("codexx.ico"))
-        .unwrap_or_else(|| PathBuf::from("codexx.ico"))
+        .map(|path| path.join("codex-go.ico"))
+        .unwrap_or_else(|| PathBuf::from("codex-go.ico"))
 }
 
 #[allow(dead_code)]
 fn _entrypoint_names() -> (&'static str, &'static str) {
-    (SILENT_NAME, MANAGER_NAME)
+    (super::SILENT_NAME, "")
 }

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
-pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 57321;
+pub const DEFAULT_PROTOCOL_PROXY_PORT: u16 = 58321;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);

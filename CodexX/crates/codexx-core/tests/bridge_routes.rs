@@ -35,7 +35,6 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/backend/repair", json!({})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
-        ("/ads", json!({})),
         ("/zed-remote/status", json!({})),
         (
             "/zed-remote/resolve-host",
@@ -284,7 +283,7 @@ async fn runtime_routes_keep_user_script_inventory_shape() {
 }
 
 #[tokio::test]
-async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
+async fn runtime_status_devtools_and_repair_routes_are_dispatched() {
     let ctx = test_context();
 
     assert_eq!(
@@ -302,10 +301,6 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/backend/repair", json!({})).await,
         json!({"status": "ok", "message": "后端已修复", "version": codexx_core::version::VERSION})
-    );
-    assert_eq!(
-        handle_bridge_request(ctx.clone(), "/ads", json!({})).await,
-        json!({"version": 1, "ads": [{"id": "runtime-ad"}]})
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/zed-remote/status", json!({})).await,
@@ -486,7 +481,7 @@ async fn data_routes_forward_payloads_to_data_service() {
 #[tokio::test]
 async fn bridge_context_core_with_data_uses_injected_data_service() {
     let ctx = BridgeContext::core_with_data(
-        Arc::new(CoreRuntimeService::new(9229, StatusStore::default())),
+        Arc::new(CoreRuntimeService::new(9329, StatusStore::default())),
         Arc::new(FakeData::default()),
     );
 
@@ -625,7 +620,7 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
         temp.path().join("user_scripts.json"),
     );
     let evaluated = Arc::new(Mutex::new(Vec::<String>::new()));
-    let runtime = CoreRuntimeService::new(9229, StatusStore::default())
+    let runtime = CoreRuntimeService::new(9329, StatusStore::default())
         .with_user_scripts(manager)
         .with_user_script_evaluator({
             let evaluated = evaluated.clone();
@@ -662,7 +657,7 @@ async fn core_runtime_reload_evaluates_enabled_user_bundle_and_status_is_ok() {
 #[tokio::test]
 async fn core_runtime_open_devtools_uses_inspector_url_opener() {
     let opened = Arc::new(Mutex::new(Vec::<String>::new()));
-    let runtime = CoreRuntimeService::new(9229, StatusStore::default())
+    let runtime = CoreRuntimeService::new(9329, StatusStore::default())
         .with_devtools_opener({
             let opened = opened.clone();
             Arc::new(move |url| {
@@ -679,14 +674,14 @@ async fn core_runtime_open_devtools_uses_inspector_url_opener() {
     assert_eq!(result["target_id"], "page-1");
     assert_eq!(
         opened.lock().unwrap().as_slice(),
-        ["http://127.0.0.1:9229/devtools/inspector.html?ws=127.0.0.1:9229/devtools/page/page-1"]
+        ["http://127.0.0.1:9329/devtools/inspector.html?ws=127.0.0.1:9329/devtools/page/page-1"]
     );
 }
 
 #[tokio::test]
 async fn core_runtime_manager_route_attempts_to_open_manager_binary() {
     let ctx = BridgeContext::core(Arc::new(CoreRuntimeService::new(
-        9229,
+        9329,
         StatusStore::default(),
     )));
 
@@ -698,10 +693,10 @@ async fn core_runtime_manager_route_attempts_to_open_manager_binary() {
 #[tokio::test]
 async fn bridge_backend_status_writes_diagnostic_log() {
     let temp = tempfile::tempdir().unwrap();
-    let log_path = temp.path().join("codex-plus.log");
+    let log_path = temp.path().join("codexx.log");
     codexx_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
     let ctx = BridgeContext::core(Arc::new(CoreRuntimeService::new(
-        9229,
+        9329,
         StatusStore::default(),
     )));
 
@@ -895,8 +890,8 @@ async fn launch_lifecycle_uses_hook_supplied_bridge_context_for_injection() {
     launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
-            debug_port: 9229,
-            helper_port: 57321,
+            debug_port: 9329,
+            helper_port: 58321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
         },
         &hooks,
@@ -907,9 +902,9 @@ async fn launch_lifecycle_uses_hook_supplied_bridge_context_for_injection() {
     assert_eq!(
         *events.lock().unwrap(),
         vec![
-            "bridge-context:9229",
-            "inject-bridge:9229:57321",
-            "watchdog:9229:57321",
+            "bridge-context:9329",
+            "inject-bridge:9329:58321",
+            "watchdog:9329:58321",
             "status:running",
         ]
     );
@@ -1075,10 +1070,6 @@ impl BridgeRuntimeService for FakeRuntime {
             "models": ["qwen3-coder"],
             "sources": []
         }))
-    }
-
-    async fn ads(&self) -> anyhow::Result<Value> {
-        Ok(json!({"version": 1, "ads": [{"id": "runtime-ad"}]}))
     }
 
     async fn zed_remote_status(&self) -> anyhow::Result<Value> {

@@ -52,6 +52,7 @@ jobs:
           New-Item -ItemType Directory -Force dist/windows/app | Out-Null
           Copy-Item target/release/codexx.exe dist/windows/app/
           Copy-Item target/release/codexx-manager.exe dist/windows/app/
+          Copy-Item target/release/WebView2Loader.dll dist/windows/app/
 
       - name: Build Windows installer
         shell: pwsh
@@ -136,7 +137,7 @@ jobs:
           set -euo pipefail
           test -L "dist/macos/stage/Applications"
           test "$(readlink "dist/macos/stage/Applications")" = "/Applications"
-          for app in "dist/macos/stage/CodexX.app" "dist/macos/stage/CodexX Manager.app"; do
+          for app in "dist/macos/stage/CodexX.app"; do
             test -f "$app/Contents/Info.plist"
             test -f "$app/Contents/PkgInfo"
             test -x "$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"

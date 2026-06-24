@@ -143,6 +143,14 @@ pub fn desktop_dir() -> Option<PathBuf> {
 
 #[cfg(windows)]
 pub fn open_url(url: &str) -> anyhow::Result<()> {
+    if std::process::Command::new("msedge.exe")
+        .arg(url)
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+
     let operation = wide_null("open");
     let file = wide_null(url);
     let result = unsafe {

@@ -10,9 +10,9 @@ pub const CDP_PROBE_TIMEOUT_SECONDS: f64 = 0.5;
 pub const TAKEOVER_FAILURE_BACKOFF_SECONDS: f64 = 30.0;
 pub const RESTART_STOP_WAIT_TIMEOUT_MS: u64 = 5_000;
 const RESTART_STOP_WAIT_INTERVAL_MS: u64 = 100;
-pub const WATCHER_RUN_NAME: &str = "CodexXWatcher";
+pub const WATCHER_RUN_NAME: &str = "CodexGOWatcher";
 pub const WATCHER_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "CodexXWatcher.lnk";
+pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "CodexGOWatcher.lnk";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatcherInstallPlan {
@@ -113,7 +113,7 @@ pub fn filter_killable_launcher_processes<'a>(
     processes
         .into_iter()
         .filter(|(process_id, _, exe_file)| {
-            !protected.contains(process_id) && exe_file.eq_ignore_ascii_case("codexx.exe")
+            !protected.contains(process_id) && exe_file.eq_ignore_ascii_case("codexgo.exe")
         })
         .map(|(process_id, _, _)| process_id)
         .collect()
@@ -297,7 +297,7 @@ fn create_startup_shortcut(launcher_path: &Path, arguments: &str) -> anyhow::Res
         target: launcher_path.to_path_buf(),
         arguments: arguments.to_string(),
         working_directory: launcher_path.parent().map(Path::to_path_buf),
-        description: "CodexX watcher".to_string(),
+        description: format!("{} watcher", crate::brand::PRODUCT_NAME),
         icon: None,
         show_minimized: true,
     })
