@@ -95,7 +95,7 @@ fn injection_script_marks_diagnostic_build_and_reports_script_loaded() {
     assert!(script.contains("window.__CODEX_PLUS_BUILD__"));
     assert!(script.contains(codexx_core::assets::DIAGNOSTIC_BUILD_ID));
     assert!(script.contains("script_loaded"));
-    assert!(script.contains("data-codex-plus-build"));
+    assert!(script.contains("codexPlusBuild"));
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
     );
-    assert!(script.contains("if (name === \"openai-bundled\" || name === \"codex-plus-openai-bundled\") return \"OpenAI插件1(CodexX)\""));
+    assert!(script.contains("if (name === \"openai-bundled\" || name === \"codex-plus-openai-bundled\") return `OpenAI插件1(${codexPlusDisplayName})`"));
 }
 
 #[test]
@@ -263,9 +263,9 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
     assert!(script.contains(
         "if (name === \"openai-primary-runtime\") return \"codex-plus-openai-primary-runtime\""
     ));
-    assert!(script.contains("OpenAI插件1(CodexX)"));
-    assert!(script.contains("OpenAI插件2(CodexX)"));
-    assert!(script.contains("OpenAI插件3(CodexX)"));
+    assert!(script.contains("OpenAI插件1(${codexPlusDisplayName})"));
+    assert!(script.contains("OpenAI插件2(${codexPlusDisplayName})"));
+    assert!(script.contains("OpenAI插件3(${codexPlusDisplayName})"));
     assert!(script.contains("method === \"install-plugin\""));
     assert!(script.contains("plugin_marketplace_response_expanded"));
     assert!(script.contains("plugin_build_flavor_filter_bypassed"));
