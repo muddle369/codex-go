@@ -63,6 +63,7 @@ fn app_paths_find_latest_windows_package_returns_package_when_app_dir_missing() 
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("OpenAI.Codex_26.429.8261.0_x64__abc");
     std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("ChatGPT.exe"), "").unwrap();
 
     assert_eq!(find_latest_codex_app_dir(temp.path()).unwrap(), package);
 }
@@ -124,9 +125,15 @@ fn app_paths_user_data_candidates_include_local_and_roaming_variants() {
     assert_eq!(
         candidates,
         vec![
+            local.join("OpenAI").join("ChatGPT"),
+            local.join("OpenAI.ChatGPT-Desktop"),
+            local.join("ChatGPT"),
             local.join("OpenAI").join("Codex"),
             local.join("OpenAI.Codex"),
             local.join("Codex"),
+            roaming.join("OpenAI").join("ChatGPT"),
+            roaming.join("OpenAI.ChatGPT-Desktop"),
+            roaming.join("ChatGPT"),
             roaming.join("OpenAI").join("Codex"),
             roaming.join("OpenAI.Codex"),
             roaming.join("Codex"),
