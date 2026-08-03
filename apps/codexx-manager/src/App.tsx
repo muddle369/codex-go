@@ -38,6 +38,7 @@ import {
   MessageCircle,
   Moon,
   Network,
+  Palette,
   Power,
   PowerOff,
   Plus,
@@ -133,6 +134,7 @@ type BackendSettings = {
   codexAppDreamSkinTheme: string;
   codexAppDreamSkinBackgroundPath: string;
   codexAppDreamSkinAccent: string;
+  codexAppDreamSkinThemeConfig: Record<string, unknown>;
   codexAppComposerCompanionEnabled: boolean;
   codexAppComposerCompanionPath: string;
   codexAppComposerCompanionWidth: number;
@@ -504,7 +506,18 @@ type ScriptMarketResult = CommandResult<{
 
 type ThemeMarketResult = CommandResult<{
   indexUrl: string;
-  themes: { themes?: Array<{ id?: string; name?: string; author?: string; preview_url?: string; theme_url?: string }> };
+  themes: {
+    themes?: Array<{
+      id?: string;
+      name?: string;
+      author?: string;
+      description?: string;
+      license?: string;
+      preview_url?: string;
+      previewUrl?: string;
+      theme_url?: string;
+    }>;
+  };
 }>;
 
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
@@ -561,7 +574,7 @@ type StartupResult = CommandResult<{
   setupCompleted: boolean;
 }>;
 
-type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "userScripts" | "zedRemote" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "themes" | "userScripts" | "zedRemote" | "maintenance" | "about" | "settings";
 type NavRoute = Route | "quickLaunch";
 type Theme = "dark" | "light";
 
@@ -572,6 +585,7 @@ const routes: Array<{ id: NavRoute; label: string; icon: LucideIcon }> = [
   { id: "sessions", label: "会话管理", icon: MessageCircle },
   { id: "context", label: "工具与插件", icon: Network },
   { id: "enhance", label: "页面增强", icon: Hammer },
+  { id: "themes", label: "主题", icon: Palette },
   { id: "userScripts", label: "脚本实验室", icon: FlaskConical },
   { id: "zedRemote", label: "Zed 远程项目", icon: ExternalLink },
   { id: "maintenance", label: "安装维护", icon: Wrench },
@@ -615,6 +629,7 @@ const defaultSettings: BackendSettings = {
   codexAppDreamSkinTheme: "",
   codexAppDreamSkinBackgroundPath: "",
   codexAppDreamSkinAccent: "",
+  codexAppDreamSkinThemeConfig: {},
   codexAppComposerCompanionEnabled: false,
   codexAppComposerCompanionPath: "",
   codexAppComposerCompanionWidth: 96,
@@ -726,6 +741,7 @@ export function App() {
   });
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [themeMarket, setThemeMarket] = useState<ThemeMarketResult | null>(null);
+  const [themeMarketRefreshing, setThemeMarketRefreshing] = useState(false);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
     debugPort: "9329",
@@ -803,10 +819,15 @@ export function App() {
   };
 
   const refreshThemeMarket = async () => {
-    const result = await run(() => call<ThemeMarketResult>("refresh_theme_market"));
-    if (result) {
-      setThemeMarket(result);
-      showResultNotice("Dream Skin 主题市场", result, { silentSuccess: true });
+    setThemeMarketRefreshing(true);
+    try {
+      const result = await run(() => call<ThemeMarketResult>("refresh_theme_market"));
+      if (result) {
+        setThemeMarket(result);
+        showResultNotice("Dream Skin 主题市场", result, { silentSuccess: true });
+      }
+    } finally {
+      setThemeMarketRefreshing(false);
     }
   };
 
@@ -1002,6 +1023,10 @@ export function App() {
       await refreshSettings(true);
       await refreshScriptMarket(true);
     }
+    if (next === "themes") {
+      await refreshSettings(true);
+      await refreshThemeMarket();
+    }
     if (next === "zedRemote") {
       await refreshSettings(true);
       await refreshZedRemoteProjects(true);
@@ -1044,7 +1069,7 @@ export function App() {
   const restart = async () => {
     const result = await launchCommand("restart_codex_plus");
     if (result) {
-      showNotice(`重启 ${BRAND.productName}`, result.message, result.status);
+      showNotice("重启 Codex", result.message, result.status);
       await refreshOverview(true);
     }
   };
@@ -1920,7 +1945,10 @@ export function App() {
       refreshThemeMarket,
       installTheme: async (id: string) => {
         const result = await run(() => call<CommandResult<{ installed: boolean }>>("install_theme", { id }));
-        if (result) showResultNotice("Dream Skin 主题", result);
+        if (result) {
+          showResultNotice("Dream Skin 主题", result);
+          if (isSuccessStatus(result.status)) await refreshSettings(true);
+        }
       },
       testStepwiseSettings: async (settings: BackendSettings) => {
         const result = await run(() => call<CommandResult<{ items?: unknown[] }>>("test_stepwise_settings", { settings }));
@@ -2066,9 +2094,9 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title={`重启 ${BRAND.productName}`} variant="outline">
+            <Button onClick={() => void actions.restart()} title="重启 Codex" variant="outline">
               <Rocket className="h-4 w-4" />
-              {`重启 ${BRAND.productName}`}
+              重启 Codex
             </Button>
             <Button onClick={() => void actions.refreshCurrent()} size="icon" title="刷新当前页面" variant="outline">
               <RefreshCw className="h-4 w-4" />
@@ -2114,7 +2142,10 @@ export function App() {
             />
           ) : null}
           {route === "enhance" ? (
-            <EnhanceScreen form={settingsForm} themeMarket={themeMarket} onFormChange={setSettingsForm} actions={actions} />
+            <EnhanceScreen form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+          ) : null}
+          {route === "themes" ? (
+            <ThemeScreen form={settingsForm} themeMarket={themeMarket} themeMarketRefreshing={themeMarketRefreshing} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
           {route === "zedRemote" ? (
@@ -2690,14 +2721,100 @@ function envConflictSourceLabel(source: string): string {
   return source || "环境变量";
 }
 
-function EnhanceScreen({
+function ThemeScreen({
   form,
   themeMarket,
+  themeMarketRefreshing,
   onFormChange,
   actions,
 }: {
   form: BackendSettings;
   themeMarket: ThemeMarketResult | null;
+  themeMarketRefreshing: boolean;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const themes = themeMarket?.themes.themes ?? [];
+  const [installingThemeId, setInstallingThemeId] = useState("");
+  const configuredThemeId = typeof form.codexAppDreamSkinThemeConfig?.id === "string"
+    ? form.codexAppDreamSkinThemeConfig.id
+    : "";
+  const installTheme = async (id: string) => {
+    if (!id || installingThemeId) return;
+    setInstallingThemeId(id);
+    try {
+      await actions.installTheme(id);
+    } finally {
+      setInstallingThemeId("");
+    }
+  };
+  return (
+    <>
+      <Panel>
+        <CardHead title="Dream Skin 主题" detail="选择主题后会保存完整主题配置；重新注入或重启 Codex 后生效。" />
+        <CardContent>
+          <div className="feature-grid">
+            <FeatureToggle title="启用 Dream Skin" detail="为 Codex 页面应用完整主题、背景和配色。" checked={form.codexAppDreamSkinEnabled} disabled={!form.enhancementsEnabled} onChange={(value) => onFormChange({ ...form, codexAppDreamSkinEnabled: value })} />
+            <FeatureToggle title="启用 Composer Companion" detail="在输入框旁显示伴侣图片，不拦截鼠标操作。" checked={form.codexAppComposerCompanionEnabled} disabled={!form.enhancementsEnabled} onChange={(value) => onFormChange({ ...form, codexAppComposerCompanionEnabled: value })} />
+          </div>
+          <div className="form-grid two-columns">
+            <Field label="当前主题"><Input value={form.codexAppDreamSkinTheme} readOnly placeholder="尚未选择主题" /></Field>
+            <Field label="强调色"><Input value={form.codexAppDreamSkinAccent} disabled={!form.enhancementsEnabled} onChange={(event) => onFormChange({ ...form, codexAppDreamSkinAccent: event.currentTarget.value })} placeholder="#8b7cff" /></Field>
+            <Field label="自定义背景"><div className="inline-field"><Input value={form.codexAppDreamSkinBackgroundPath} readOnly placeholder="由主题提供或手动选择" /><Button onClick={() => void actions.chooseDreamSkinBackgroundPath()} size="sm" variant="outline">选择</Button></div></Field>
+            <Field label="伴侣图片"><div className="inline-field"><Input value={form.codexAppComposerCompanionPath} readOnly placeholder="未选择" /><Button onClick={() => void actions.chooseComposerCompanionPath()} size="sm" variant="outline">选择</Button></div></Field>
+            <Field label="伴侣宽度"><Input type="number" min={48} max={320} value={form.codexAppComposerCompanionWidth} disabled={!form.enhancementsEnabled} onChange={(event) => onFormChange({ ...form, codexAppComposerCompanionWidth: Number(event.currentTarget.value) || 96 })} /></Field>
+            <Field label="伴侣位置"><select className="select-input" disabled={!form.enhancementsEnabled} value={form.codexAppComposerCompanionSide} onChange={(event) => onFormChange({ ...form, codexAppComposerCompanionSide: event.currentTarget.value })}><option value="auto">自动</option><option value="left">左侧</option><option value="right">右侧</option></select></Field>
+          </div>
+          <Toolbar><Button onClick={() => void actions.saveSettings()}>保存主题设置</Button></Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title="主题市场" detail="预览并选择 CodexGO 社区主题。" />
+        <CardContent>
+          <div className="market-toolbar theme-market-toolbar">
+            <Button disabled={themeMarketRefreshing} onClick={() => void actions.refreshThemeMarket()} variant="outline">
+              <RefreshCw className={`h-4 w-4 ${themeMarketRefreshing ? "animate-spin" : ""}`} />
+              {themeMarketRefreshing ? "正在刷新…" : "刷新主题"}
+            </Button>
+            <span>{themeMarket?.status === "ok" ? `${themes.length} 个主题` : "CodexGO 主题仓库"}</span>
+          </div>
+          {themes.length ? (
+            <div className="theme-market-grid">
+              {themes.map((theme) => {
+                const id = theme.id || "";
+                const name = theme.name || id || "未命名主题";
+                const active = form.codexAppDreamSkinEnabled && (configuredThemeId === id || (!configuredThemeId && form.codexAppDreamSkinTheme === name));
+                const previewUrl = theme.preview_url || theme.previewUrl || "";
+                return (
+                  <article className="theme-market-card" data-active={active} key={id || name}>
+                    <div className="theme-market-preview">
+                      {previewUrl ? <img src={previewUrl} alt={`${name} 主题预览`} loading="lazy" /> : <div className="theme-market-preview-empty"><Palette className="h-8 w-8" /><span>暂无预览</span></div>}
+                      {active ? <div className="theme-market-active"><CheckCircle2 className="h-4 w-4" /><span>当前使用</span></div> : null}
+                    </div>
+                    <div className="theme-market-body">
+                      <div className="theme-market-heading"><div><strong>{name}</strong><small>{theme.author || "CodexGO 社区"}</small></div>{theme.license ? <UiBadge variant="outline">{theme.license}</UiBadge> : null}</div>
+                      <p>{theme.description || "CodexGO 社区主题"}</p>
+                      <Button disabled={!id || active || Boolean(installingThemeId)} onClick={() => void installTheme(id)} variant={active ? "secondary" : "outline"}>
+                        {installingThemeId === id ? <><RefreshCw className="h-4 w-4 animate-spin" />正在安装并应用…</> : active ? <><CheckCircle2 className="h-4 w-4" />当前使用</> : "安装并应用"}
+                      </Button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : <div className="empty-state">点击“刷新主题”加载主题市场。</div>}
+        </CardContent>
+      </Panel>
+    </>
+  );
+}
+
+function EnhanceScreen({
+  form,
+  onFormChange,
+  actions,
+}: {
+  form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
@@ -2756,6 +2873,7 @@ function EnhanceScreen({
             <FeatureToggle title="同步 Zed settings" detail="高级选项，默认关闭；当前实现不主动改写 Zed settings。" checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
             <FeatureToggle title="Upstream worktree" detail="从最新 upstream 分支创建 Git worktree。" checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
             <FeatureToggle title="原生菜单栏位置" detail={`把 ${BRAND.productName} 菜单插入 Codex 顶部原生菜单栏。`} checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
+            <FeatureToggle title="粘贴修复" detail="将多行文本稳定写入 Codex 输入框，减少粘贴后内容丢失或格式异常。" checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
           </div>
           <div className="zed-remote-settings">
             <Field label="Zed 默认打开策略">
@@ -2772,27 +2890,6 @@ function EnhanceScreen({
               </select>
             </Field>
           </div>
-          <Panel>
-            <CardHead title="Dream Skin" detail="主题视觉和 Composer Companion，默认关闭；保存后重新注入 Codex 生效。" />
-            <CardContent>
-              <div className="feature-grid">
-                <FeatureToggle title="启用 Dream Skin" detail="为 Codex 页面应用主题背景和强调色。" checked={form.codexAppDreamSkinEnabled} disabled={!masterEnabled} onChange={(value) => onFormChange({ ...form, codexAppDreamSkinEnabled: value })} />
-                <FeatureToggle title="启用 Composer Companion" detail="在输入框旁显示主题伴侣图片，不拦截鼠标操作。" checked={form.codexAppComposerCompanionEnabled} disabled={!masterEnabled} onChange={(value) => onFormChange({ ...form, codexAppComposerCompanionEnabled: value })} />
-                <FeatureToggle title="粘贴修复" detail="将多行文本稳定写入 Codex 输入框，减少粘贴后内容丢失或格式异常。" checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => onFormChange({ ...form, codexAppPasteFix: value })} />
-              </div>
-              <div className="form-grid two-columns">
-                <Field label="主题名称"><Input value={form.codexAppDreamSkinTheme} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppDreamSkinTheme: event.currentTarget.value })} placeholder="例如：Dream Skin" /></Field>
-                <Field label="强调色"><Input value={form.codexAppDreamSkinAccent} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppDreamSkinAccent: event.currentTarget.value })} placeholder="#8b7cff" /></Field>
-                <Field label="背景图片"><div className="inline-field"><Input value={form.codexAppDreamSkinBackgroundPath} readOnly placeholder="未选择" /><Button onClick={() => void actions.chooseDreamSkinBackgroundPath()} size="sm" variant="outline">选择</Button></div></Field>
-                <Field label="伴侣图片"><div className="inline-field"><Input value={form.codexAppComposerCompanionPath} readOnly placeholder="未选择" /><Button onClick={() => void actions.chooseComposerCompanionPath()} size="sm" variant="outline">选择</Button></div></Field>
-                <Field label="伴侣宽度"><Input type="number" min={48} max={320} value={form.codexAppComposerCompanionWidth} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppComposerCompanionWidth: Number(event.currentTarget.value) || 96 })} /></Field>
-                <Field label="伴侣位置"><select className="select-input" disabled={!masterEnabled} value={form.codexAppComposerCompanionSide} onChange={(event) => onFormChange({ ...form, codexAppComposerCompanionSide: event.currentTarget.value })}><option value="auto">自动</option><option value="left">左侧</option><option value="right">右侧</option></select></Field>
-              </div>
-              <div className="market-toolbar"><Button onClick={() => void actions.refreshThemeMarket()} variant="outline"><RefreshCw className="h-4 w-4" />刷新主题市场</Button><span>{themeMarket?.status === "ok" ? `${themeMarket.themes.themes?.length ?? 0} 个主题` : "CodexGO 主题仓库"}</span></div>
-              {themeMarket?.themes.themes?.length ? <div className="script-market-grid">{themeMarket.themes.themes.map((theme) => <div className="script-market-card" key={theme.id || theme.name}><div className="script-market-card-body"><strong>{theme.name || theme.id || "未命名主题"}</strong><small>{theme.author || "CodexGO 社区"}</small><Button size="sm" variant="outline" onClick={() => { onFormChange({ ...form, codexAppDreamSkinEnabled: true, codexAppDreamSkinTheme: theme.name || theme.id || "" }); if (theme.id) void actions.installTheme(theme.id); }}>安装并选择</Button></div></div>)}</div> : null}
-              <Toolbar><Button onClick={() => void actions.saveSettings()}>保存 Dream Skin 设置</Button></Toolbar>
-            </CardContent>
-          </Panel>
           <Panel>
             <CardHead title="Stepwise 分步建议" detail="根据当前对话生成可直接发送的下一步建议，默认关闭。" />
             <CardContent>
@@ -4782,6 +4879,7 @@ function routeSubtitle(route: Route) {
     sessions: "查看、删除和修复 Codex 本地会话",
     context: "独立管理 MCP、Skills、Plugins",
     enhance: "会话删除、导出、项目移动和脚本能力",
+    themes: "预览、安装和切换 Codex Dream Skin 主题",
     userScripts: "安装、启停和调试实验脚本",
     zedRemote: "管理 Codex SSH 项目并加入 Zed workspace",
     maintenance: "入口安装、修复、Watcher 与手动启动",

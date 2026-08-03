@@ -87,6 +87,33 @@ fn manager_launch_button_spawns_silent_launcher_binary() {
 }
 
 #[test]
+fn manager_restart_targets_the_requested_debug_port() {
+    let commands_rs =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands.rs"))
+            .expect("read manager commands.rs");
+
+    assert!(
+        commands_rs.contains("stop_codex_processes_for_debug_port_and_wait(request.debug_port)")
+    );
+}
+
+#[test]
+fn theme_refresh_button_shows_and_disables_during_refresh() {
+    let app_tsx = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("src/App.tsx"),
+    )
+    .expect("read App.tsx");
+
+    assert!(app_tsx.contains("disabled={themeMarketRefreshing}"));
+    assert!(app_tsx.contains("正在刷新…"));
+    assert!(app_tsx.contains("setThemeMarketRefreshing(true)"));
+    assert!(app_tsx.contains("setThemeMarketRefreshing(false)"));
+}
+
+#[test]
 fn macos_packager_hides_silent_launcher_but_not_manager() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let packager = manifest_dir

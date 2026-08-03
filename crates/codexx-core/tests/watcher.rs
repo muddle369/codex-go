@@ -1,7 +1,8 @@
 use codexx_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    process_ids_still_running, should_recover_stale_launcher, watcher_disabled_flag,
+    macos_codex_process_ids_for_debug_port, process_ids_still_running,
+    should_recover_stale_launcher, watcher_disabled_flag,
 };
 
 #[test]
@@ -106,5 +107,22 @@ fn stop_wait_tracks_only_expected_process_ids() {
     assert_eq!(
         process_ids_still_running(&[10, 20, 30], [5, 20, 40, 30]),
         vec![20, 30]
+    );
+}
+
+#[test]
+fn macos_restart_targets_only_desktop_processes_using_the_selected_debug_port() {
+    let processes = [
+        "  101 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port=9329",
+        "  102 /Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper --remote-debugging-port=9329",
+        "  103 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9229",
+        "  104 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9329",
+        "  104 /Applications/Codex.app/Contents/MacOS/Codex --remote-debugging-port=9329",
+        "  105 /Applications/AI Tools/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-port=9329",
+    ];
+
+    assert_eq!(
+        macos_codex_process_ids_for_debug_port(processes, 9329),
+        vec![101, 104, 105]
     );
 }

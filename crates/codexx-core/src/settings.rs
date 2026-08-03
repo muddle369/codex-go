@@ -251,11 +251,16 @@ pub struct BackendSettings {
     pub codex_app_dream_skin_background_path: String,
     #[serde(rename = "codexAppDreamSkinAccent", default)]
     pub codex_app_dream_skin_accent: String,
+    #[serde(rename = "codexAppDreamSkinThemeConfig", default)]
+    pub codex_app_dream_skin_theme_config: Value,
     #[serde(rename = "codexAppComposerCompanionEnabled", default)]
     pub codex_app_composer_companion_enabled: bool,
     #[serde(rename = "codexAppComposerCompanionPath", default)]
     pub codex_app_composer_companion_path: String,
-    #[serde(rename = "codexAppComposerCompanionWidth", default = "default_companion_width")]
+    #[serde(
+        rename = "codexAppComposerCompanionWidth",
+        default = "default_companion_width"
+    )]
     pub codex_app_composer_companion_width: u16,
     #[serde(rename = "codexAppComposerCompanionSide", default)]
     pub codex_app_composer_companion_side: String,
@@ -271,17 +276,32 @@ pub struct BackendSettings {
     pub codex_app_stepwise_base_url: String,
     #[serde(rename = "codexAppStepwiseApiKey", default)]
     pub codex_app_stepwise_api_key: String,
-    #[serde(rename = "codexAppStepwiseApiKeyEnv", default = "default_stepwise_api_key_env")]
+    #[serde(
+        rename = "codexAppStepwiseApiKeyEnv",
+        default = "default_stepwise_api_key_env"
+    )]
     pub codex_app_stepwise_api_key_env: String,
     #[serde(rename = "codexAppStepwiseModel", default)]
     pub codex_app_stepwise_model: String,
-    #[serde(rename = "codexAppStepwiseMaxItems", default = "default_stepwise_max_items")]
+    #[serde(
+        rename = "codexAppStepwiseMaxItems",
+        default = "default_stepwise_max_items"
+    )]
     pub codex_app_stepwise_max_items: u8,
-    #[serde(rename = "codexAppStepwiseMaxInputChars", default = "default_stepwise_max_input_chars")]
+    #[serde(
+        rename = "codexAppStepwiseMaxInputChars",
+        default = "default_stepwise_max_input_chars"
+    )]
     pub codex_app_stepwise_max_input_chars: u32,
-    #[serde(rename = "codexAppStepwiseMaxOutputTokens", default = "default_stepwise_max_output_tokens")]
+    #[serde(
+        rename = "codexAppStepwiseMaxOutputTokens",
+        default = "default_stepwise_max_output_tokens"
+    )]
     pub codex_app_stepwise_max_output_tokens: u32,
-    #[serde(rename = "codexAppStepwiseTimeoutMs", default = "default_stepwise_timeout_ms")]
+    #[serde(
+        rename = "codexAppStepwiseTimeoutMs",
+        default = "default_stepwise_timeout_ms"
+    )]
     pub codex_app_stepwise_timeout_ms: u64,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
@@ -359,6 +379,7 @@ impl Default for BackendSettings {
             codex_app_dream_skin_theme: String::new(),
             codex_app_dream_skin_background_path: String::new(),
             codex_app_dream_skin_accent: String::new(),
+            codex_app_dream_skin_theme_config: Value::Object(Map::new()),
             codex_app_composer_companion_enabled: false,
             codex_app_composer_companion_path: String::new(),
             codex_app_composer_companion_width: default_companion_width(),
@@ -778,6 +799,9 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             target.insert(key.to_string(), Value::String(value.to_string()));
         }
     }
+    if let Some(value) = source.get("codexAppDreamSkinThemeConfig") {
+        target.insert("codexAppDreamSkinThemeConfig".to_string(), value.clone());
+    }
     merge_bool_setting(target, source, "codexAppComposerCompanionEnabled");
     merge_bool_setting(target, source, "codexAppStepwiseEnabled");
     merge_bool_setting(target, source, "codexAppStepwiseDirectSend");
@@ -802,7 +826,11 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             target.insert(key.to_string(), Value::Number(value.into()));
         }
     }
-    for key in ["codexAppComposerCompanionWidth", "codexAppComposerCompanionOffsetX", "codexAppComposerCompanionOffsetY"] {
+    for key in [
+        "codexAppComposerCompanionWidth",
+        "codexAppComposerCompanionOffsetX",
+        "codexAppComposerCompanionOffsetY",
+    ] {
         if let Some(value) = source.get(key).and_then(Value::as_i64) {
             target.insert(key.to_string(), Value::Number(value.into()));
         }
@@ -1030,8 +1058,12 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     settings.codex_app_image_overlay_opacity =
         clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
-    settings.codex_app_composer_companion_width = settings.codex_app_composer_companion_width.clamp(48, 320);
-    if !matches!(settings.codex_app_composer_companion_side.as_str(), "left" | "right" | "auto") {
+    settings.codex_app_composer_companion_width =
+        settings.codex_app_composer_companion_width.clamp(48, 320);
+    if !matches!(
+        settings.codex_app_composer_companion_side.as_str(),
+        "left" | "right" | "auto"
+    ) {
         settings.codex_app_composer_companion_side = "auto".to_string();
     }
     if !settings.codex_app_dream_skin_accent.trim().is_empty()

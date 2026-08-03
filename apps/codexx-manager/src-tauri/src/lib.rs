@@ -2,10 +2,10 @@ pub mod commands;
 pub mod install;
 
 use tauri::{
+    RunEvent, WindowEvent,
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    RunEvent, WindowEvent,
 };
 const TRAY_MENU_HIDE: &str = "tray-hide";
 const TRAY_MENU_QUICK_LAUNCH: &str = "tray-quick-launch";
@@ -169,29 +169,32 @@ fn configure_tray(app: tauri::AppHandle) -> tauri::Result<()> {
 }
 
 fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let quick_launch_item =
-        MenuItem::with_id(app, TRAY_MENU_QUICK_LAUNCH, "打开启动面板", true, None::<&str>)?;
+    let quick_launch_item = MenuItem::with_id(
+        app,
+        TRAY_MENU_QUICK_LAUNCH,
+        "打开启动面板",
+        true,
+        None::<&str>,
+    )?;
     let hide_item = MenuItem::with_id(app, TRAY_MENU_HIDE, "隐藏启动面板", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT, "退出", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     Menu::with_items(
         app,
-        &[
-            &quick_launch_item,
-            &hide_item,
-            &separator,
-            &quit_item,
-        ],
+        &[&quick_launch_item, &hide_item, &separator, &quit_item],
     )
 }
 
 fn tray_icon_image<'a>(app: &'a tauri::AppHandle) -> tauri::Result<Image<'a>> {
     #[cfg(target_os = "macos")]
-    if let Ok(image) = Image::from_bytes(include_bytes!("../../../../assets/images/tray-template.png")) {
+    if let Ok(image) = Image::from_bytes(include_bytes!(
+        "../../../../assets/images/tray-template.png"
+    )) {
         return Ok(image);
     }
     #[cfg(windows)]
-    if let Ok(image) = Image::from_bytes(include_bytes!("../../../../assets/images/tray-icon.ico")) {
+    if let Ok(image) = Image::from_bytes(include_bytes!("../../../../assets/images/tray-icon.ico"))
+    {
         return Ok(image);
     }
     Ok(app
@@ -200,9 +203,7 @@ fn tray_icon_image<'a>(app: &'a tauri::AppHandle) -> tauri::Result<Image<'a>> {
         .ok_or_else(|| anyhow::anyhow!("缺少默认窗口图标"))?)
 }
 
-fn register_main_window_events<R: tauri::Runtime>(
-    window: tauri::WebviewWindow<R>,
-) {
+fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     let event_window = window.clone();
     let close_window = event_window.clone();
     let minimized_window = event_window.clone();

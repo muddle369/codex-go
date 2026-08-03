@@ -1087,38 +1087,37 @@ async fn handle_protocol_proxy_connection(
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream =
-        match crate::protocol_proxy::open_responses_proxy_request_for_path(
-            request_body,
-            request_user_agent,
-            path,
-        )
-        .await
-        {
-            Ok(upstream) => upstream,
-            Err(error) => {
-                let body = serde_json::to_vec(&serde_json::json!({
-                    "status": "failed",
-                    "message": error.to_string()
-                }))?;
-                write_http_response(
-                    stream,
-                    "502 Bad Gateway",
-                    "application/json; charset=utf-8",
-                    &body,
-                )
-                .await?;
-                log_helper_response(
-                    "helper.protocol_proxy_failed",
-                    method,
-                    path,
-                    "502 Bad Gateway",
-                    remote_addr_text,
-                );
-                stream.shutdown().await?;
-                return Ok(());
-            }
-        };
+    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path(
+        request_body,
+        request_user_agent,
+        path,
+    )
+    .await
+    {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": error.to_string()
+            }))?;
+            write_http_response(
+                stream,
+                "502 Bad Gateway",
+                "application/json; charset=utf-8",
+                &body,
+            )
+            .await?;
+            log_helper_response(
+                "helper.protocol_proxy_failed",
+                method,
+                path,
+                "502 Bad Gateway",
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
 
     if !upstream.is_success() {
         let status = upstream.status();
@@ -1715,7 +1714,8 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     )
     .await;
     if result.is_ok() {
-        crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(debug_port).await;
+        crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(debug_port)
+            .await;
     }
     result
 }

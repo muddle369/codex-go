@@ -12,7 +12,11 @@ use super::{
 pub fn build_app_bundle(options: &InstallOptions, manager: bool) -> MacosAppBundle {
     let install_root = install_root_or_default(options);
     let display_name = if manager { MANAGER_NAME } else { SILENT_NAME };
-    let executable_name = if manager { "CodexGOManager" } else { crate::brand::PRODUCT_NAME };
+    let executable_name = if manager {
+        "CodexGOManager"
+    } else {
+        crate::brand::PRODUCT_NAME
+    };
     let binary = if manager {
         MANAGER_BINARY
     } else {

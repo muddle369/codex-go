@@ -24,17 +24,39 @@ pub const SANITIZE_LOCAL_STORAGE_SCRIPT: &str = r#"(() => {
 
 pub async fn sanitize_local_storage_model_suffixes(debug_port: u16) -> anyhow::Result<bool> {
     let target = crate::cdp::pick_page_target(&crate::cdp::list_targets(debug_port).await?)?;
-    let websocket_url = target.web_socket_debugger_url.as_deref().context("CDP target missing websocket URL")?;
-    let result = tokio::time::timeout(Duration::from_secs(5), crate::bridge::evaluate_script_with_await_promise(websocket_url, SANITIZE_LOCAL_STORAGE_SCRIPT, false))
-        .await.context("localStorage cleanup timed out")??;
-    let changed = result.get("result").and_then(|value| value.get("value")).and_then(|value| value.get("changed")).and_then(|value| value.as_bool()).unwrap_or(false);
-    let _ = crate::diagnostic_log::append_diagnostic_log("codex_local_storage.sanitize_model_suffixes", json!({"debug_port": debug_port, "changed": changed}));
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .context("CDP target missing websocket URL")?;
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::bridge::evaluate_script_with_await_promise(
+            websocket_url,
+            SANITIZE_LOCAL_STORAGE_SCRIPT,
+            false,
+        ),
+    )
+    .await
+    .context("localStorage cleanup timed out")??;
+    let changed = result
+        .get("result")
+        .and_then(|value| value.get("value"))
+        .and_then(|value| value.get("changed"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "codex_local_storage.sanitize_model_suffixes",
+        json!({"debug_port": debug_port, "changed": changed}),
+    );
     Ok(changed)
 }
 
 pub async fn sanitize_local_storage_model_suffixes_nonfatal(debug_port: u16) {
     if let Err(error) = sanitize_local_storage_model_suffixes(debug_port).await {
-        let _ = crate::diagnostic_log::append_diagnostic_log("codex_local_storage.sanitize_model_suffixes_failed", json!({"debug_port": debug_port, "error": error.to_string()}));
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "codex_local_storage.sanitize_model_suffixes_failed",
+            json!({"debug_port": debug_port, "error": error.to_string()}),
+        );
     }
 }
 

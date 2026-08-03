@@ -5,6 +5,38 @@ use std::path::Path;
 use crate::settings::BackendSettings;
 
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
+#[cfg(windows)]
+const DREAM_SKIN_CSS: &str =
+    include_str!("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css");
+#[cfg(not(windows))]
+const DREAM_SKIN_CSS: &str =
+    include_str!("../../../assets/inject/upstream/dream-skin/macos/dream-skin.css");
+#[cfg(windows)]
+const DREAM_SKIN_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js");
+#[cfg(not(windows))]
+const DREAM_SKIN_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/dream-skin/macos/renderer-inject.js");
+#[cfg(windows)]
+const CIDALA_SKIN_CSS: &str =
+    include_str!("../../../assets/inject/upstream/cidala-tiger/windows/dream-skin.css");
+#[cfg(not(windows))]
+const CIDALA_SKIN_CSS: &str =
+    include_str!("../../../assets/inject/upstream/cidala-tiger/macos/dream-skin.css");
+#[cfg(windows)]
+const CIDALA_SKIN_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/cidala-tiger/windows/renderer-inject.js");
+#[cfg(not(windows))]
+const CIDALA_SKIN_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/cidala-tiger/macos/renderer-inject.js");
+const SNOW_SKIN_CSS: &str =
+    include_str!("../../../assets/inject/upstream/snow-skin/dream-skin.css");
+const SNOW_SKIN_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/snow-skin/renderer-inject.js");
+const GLASS_VISION_CSS: &str =
+    include_str!("../../../assets/inject/upstream/glass-vision/glass-vision.css");
+const GLASS_VISION_RENDERER: &str =
+    include_str!("../../../assets/inject/upstream/glass-vision/renderer-inject.js");
 const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/feng-alipay.JPG");
 const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/feng-wechat.JPG");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
@@ -31,8 +63,9 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let dream_skin = dream_skin_config(settings);
     let companion = composer_companion_config(settings);
     let stepwise = stepwise_config(settings);
+    let dream_skin_runtime = dream_skin_runtime_script(settings);
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN__ = {};\nwindow.__CODEX_PLUS_COMPOSER_COMPANION__ = {};\nwindow.__CODEX_PLUS_STEPWISE__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN__ = {};\nwindow.__CODEX_PLUS_COMPOSER_COMPANION__ = {};\nwindow.__CODEX_PLUS_STEPWISE__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\n{}\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(&sponsor_images).expect("sponsor images should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
@@ -41,15 +74,19 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&dream_skin).expect("dream skin config should serialize"),
         serde_json::to_string(&companion).expect("companion config should serialize"),
         serde_json::to_string(&stepwise).expect("stepwise config should serialize"),
-        serde_json::to_string(&json!({"enabled": settings.codex_app_paste_fix})).expect("paste fix config should serialize"),
+        serde_json::to_string(&json!({"enabled": settings.codex_app_paste_fix}))
+            .expect("paste fix config should serialize"),
         renderer_script(),
+        dream_skin_runtime,
     )
 }
 
 fn dream_skin_config(settings: &BackendSettings) -> Value {
     let background = if settings.codex_app_dream_skin_enabled {
-        image_file_data_uri(Path::new(settings.codex_app_dream_skin_background_path.trim()))
-            .unwrap_or_default()
+        image_file_data_uri(Path::new(
+            settings.codex_app_dream_skin_background_path.trim(),
+        ))
+        .unwrap_or_default()
     } else {
         String::new()
     };
@@ -57,8 +94,70 @@ fn dream_skin_config(settings: &BackendSettings) -> Value {
         "enabled": settings.codex_app_dream_skin_enabled,
         "theme": settings.codex_app_dream_skin_theme,
         "accent": settings.codex_app_dream_skin_accent,
+        "themeConfig": settings.codex_app_dream_skin_theme_config,
         "backgroundDataUrl": background,
     })
+}
+
+fn dream_skin_runtime_script(settings: &BackendSettings) -> String {
+    if !settings.codex_app_dream_skin_enabled {
+        return String::new();
+    }
+    let dream_skin = dream_skin_config(settings);
+    let art = dream_skin
+        .get("backgroundDataUrl")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut theme = settings.codex_app_dream_skin_theme_config.clone();
+    if !theme.is_object() || theme.as_object().is_some_and(|object| object.is_empty()) {
+        theme = json!({
+            "schemaVersion": 1,
+            "id": settings.codex_app_dream_skin_theme,
+            "name": settings.codex_app_dream_skin_theme,
+            "colors": {"accent": settings.codex_app_dream_skin_accent}
+        });
+    }
+    let style_preset = theme
+        .get("stylePreset")
+        .or_else(|| theme.get("style_preset"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let (renderer, css) = match style_preset {
+        "codex-snow" => (SNOW_SKIN_RENDERER, SNOW_SKIN_CSS),
+        "glass-vision" => (GLASS_VISION_RENDERER, GLASS_VISION_CSS),
+        "midnight-aurora" | "amber-dusk" | "forest-mist" | "cyber-neon" | "sakura-dawn" => {
+            (CIDALA_SKIN_RENDERER, CIDALA_SKIN_CSS)
+        }
+        _ => (DREAM_SKIN_RENDERER, DREAM_SKIN_CSS),
+    };
+    let css_json = serde_json::to_string(css).unwrap();
+    let art_json = serde_json::to_string(art).unwrap();
+    let theme_json = serde_json::to_string(&theme).unwrap();
+    let style_revision = serde_json::to_string(&format!("codexgo-{}", css.len())).unwrap();
+    let payload_revision =
+        serde_json::to_string(&format!("codexgo-{}", theme.to_string().len())).unwrap();
+    let payload = renderer
+        .replace("__DREAM_CSS_JSON__", &css_json)
+        .replace("__DREAM_ART_JSON__", &art_json)
+        .replace(
+            "__DREAM_VERSION_JSON__",
+            &serde_json::to_string("1.2.0").unwrap(),
+        )
+        .replace("__GLASS_VISION_CSS_JSON__", &css_json)
+        .replace("__GLASS_VISION_ART_JSON__", &art_json)
+        .replace("__DREAM_SKIN_CSS_JSON__", &css_json)
+        .replace("__DREAM_SKIN_ART_JSON__", &art_json)
+        .replace("__DREAM_SKIN_THEME_JSON__", &theme_json)
+        .replace(
+            "__DREAM_SKIN_VERSION_JSON__",
+            &serde_json::to_string("1.2.0").unwrap(),
+        )
+        .replace("__DREAM_SKIN_STYLE_REVISION_JSON__", &style_revision)
+        .replace("__DREAM_SKIN_PAYLOAD_REVISION_JSON__", &payload_revision);
+    if payload.contains("__DREAM_") || payload.contains("__GLASS_VISION_") {
+        return String::new();
+    }
+    payload
 }
 
 fn composer_companion_config(settings: &BackendSettings) -> Value {
@@ -133,5 +232,30 @@ fn image_content_type(path: &Path) -> Option<&'static str> {
         Some("gif") => Some("image/gif"),
         Some("bmp") => Some("image/bmp"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn injection_includes_resolved_dream_skin_runtime() {
+        let settings = BackendSettings {
+            codex_app_dream_skin_enabled: true,
+            codex_app_dream_skin_theme: "Test Theme".to_string(),
+            codex_app_dream_skin_theme_config: json!({
+                "id": "test-theme",
+                "name": "Test Theme",
+                "stylePreset": "midnight-aurora",
+                "colors": {"accent": "#8b7cff"}
+            }),
+            ..BackendSettings::default()
+        };
+        let script = injection_script_with_settings(49152, &settings);
+        assert!(script.contains("codex-dream-skin"));
+        assert!(script.contains("test-theme"));
+        assert!(!script.contains("__DREAM_SKIN_CSS_JSON__"));
+        assert!(!script.contains("__DREAM_SKIN_THEME_JSON__"));
     }
 }

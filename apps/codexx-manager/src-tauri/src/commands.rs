@@ -420,7 +420,7 @@ pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 #[tauri::command]
 pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     codexx_core::watcher::stop_launcher_processes_and_wait();
-    codexx_core::watcher::stop_codex_processes_and_wait();
+    codexx_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
     spawn_codex_plus_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
 }
 
@@ -1148,54 +1148,283 @@ pub async fn install_theme(id: String) -> CommandResult<Value> {
     }
     let index = match reqwest::get(THEME_MARKET_INDEX_URL).await {
         Ok(response) => match response.error_for_status() {
-            Ok(response) => match response.json::<Value>().await { Ok(value) => value, Err(error) => return failed(&format!("主题清单解析失败：{error}"), json!({"installed": false})) },
-            Err(error) => return failed(&format!("主题市场加载失败：{error}"), json!({"installed": false})),
+            Ok(response) => match response.json::<Value>().await {
+                Ok(value) => value,
+                Err(error) => {
+                    return failed(
+                        &format!("主题清单解析失败：{error}"),
+                        json!({"installed": false}),
+                    );
+                }
+            },
+            Err(error) => {
+                return failed(
+                    &format!("主题市场加载失败：{error}"),
+                    json!({"installed": false}),
+                );
+            }
         },
-        Err(error) => return failed(&format!("主题市场加载失败：{error}"), json!({"installed": false})),
+        Err(error) => {
+            return failed(
+                &format!("主题市场加载失败：{error}"),
+                json!({"installed": false}),
+            );
+        }
     };
-    let Some(theme) = index.get("themes").and_then(Value::as_array).and_then(|themes| themes.iter().find(|theme| theme.get("id").and_then(Value::as_str) == Some(id.as_str()))) else {
+    let Some(theme) = index
+        .get("themes")
+        .and_then(Value::as_array)
+        .and_then(|themes| {
+            themes
+                .iter()
+                .find(|theme| theme.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        })
+    else {
         return failed("主题清单中未找到该主题。", json!({"installed": false}));
     };
-    let Some(theme_url) = theme.get("theme_url").or_else(|| theme.get("themeUrl")).and_then(Value::as_str) else {
+    let Some(theme_url) = theme
+        .get("theme_url")
+        .or_else(|| theme.get("themeUrl"))
+        .and_then(Value::as_str)
+    else {
         return failed("该主题没有可下载地址。", json!({"installed": false}));
     };
     let body = match reqwest::get(theme_url).await {
-        Ok(response) => match response.error_for_status() { Ok(response) => match response.bytes().await { Ok(bytes) => bytes, Err(error) => return failed(&format!("主题下载失败：{error}"), json!({"installed": false})) }, Err(error) => return failed(&format!("主题下载失败：{error}"), json!({"installed": false})) },
-        Err(error) => return failed(&format!("主题下载失败：{error}"), json!({"installed": false})),
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => match response.bytes().await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return failed(
+                        &format!("主题下载失败：{error}"),
+                        json!({"installed": false}),
+                    );
+                }
+            },
+            Err(error) => {
+                return failed(
+                    &format!("主题下载失败：{error}"),
+                    json!({"installed": false}),
+                );
+            }
+        },
+        Err(error) => {
+            return failed(
+                &format!("主题下载失败：{error}"),
+                json!({"installed": false}),
+            );
+        }
     };
-    let target = codexx_core::paths::default_app_state_dir().join("dream-skin/themes").join(&id).join("theme.json");
-    if let Some(parent) = target.parent() { if let Err(error) = fs::create_dir_all(parent) { return failed(&format!("主题目录创建失败：{error}"), json!({"installed": false})); } }
-    match fs::write(&target, body) {
-        Ok(()) => ok("主题已保存到本地主题库。", json!({"installed": true, "id": id, "path": target.to_string_lossy()})),
-        Err(error) => failed(&format!("主题保存失败：{error}"), json!({"installed": false})),
+    let theme_json: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            return failed(
+                &format!("主题配置解析失败：{error}"),
+                json!({"installed": false}),
+            );
+        }
+    };
+    let theme_dir = codexx_core::paths::default_app_state_dir()
+        .join("dream-skin/themes")
+        .join(&id);
+    if let Err(error) = fs::create_dir_all(&theme_dir) {
+        return failed(
+            &format!("主题目录创建失败：{error}"),
+            json!({"installed": false}),
+        );
     }
+    let theme_path = theme_dir.join("theme.json");
+    if let Err(error) = fs::write(&theme_path, &body) {
+        return failed(
+            &format!("主题保存失败：{error}"),
+            json!({"installed": false}),
+        );
+    }
+
+    let mut background_path = None;
+    if let Some(image_url) = theme
+        .get("image_url")
+        .or_else(|| theme.get("imageUrl"))
+        .and_then(Value::as_str)
+    {
+        let image_bytes = match reqwest::get(image_url).await {
+            Ok(response) => match response.error_for_status() {
+                Ok(response) => match response.bytes().await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        return failed(
+                            &format!("主题背景下载失败：{error}"),
+                            json!({"installed": false}),
+                        );
+                    }
+                },
+                Err(error) => {
+                    return failed(
+                        &format!("主题背景下载失败：{error}"),
+                        json!({"installed": false}),
+                    );
+                }
+            },
+            Err(error) => {
+                return failed(
+                    &format!("主题背景下载失败：{error}"),
+                    json!({"installed": false}),
+                );
+            }
+        };
+        let extension = Path::new(image_url.split('?').next().unwrap_or(image_url))
+            .extension()
+            .and_then(|value| value.to_str())
+            .filter(|value| matches!(*value, "png" | "jpg" | "jpeg" | "webp"))
+            .unwrap_or("png");
+        let image_path = theme_dir.join(format!("image.{extension}"));
+        if let Err(error) = fs::write(&image_path, image_bytes) {
+            return failed(
+                &format!("主题背景保存失败：{error}"),
+                json!({"installed": false}),
+            );
+        }
+        background_path = Some(image_path);
+    }
+
+    let mut runtime_theme = theme_json.clone();
+    if let Some(theme_object) = runtime_theme.as_object_mut() {
+        if !theme_object.contains_key("schemaVersion")
+            && let Some(schema_version) = theme_object.get("schema_version").cloned()
+        {
+            theme_object.insert("schemaVersion".to_string(), schema_version);
+        }
+        if !theme_object.contains_key("colors") {
+            let accent = theme_object
+                .get("accent")
+                .cloned()
+                .unwrap_or_else(|| json!("#8b7cff"));
+            let background = theme_object
+                .get("background")
+                .cloned()
+                .unwrap_or_else(|| json!("#11121a"));
+            let panel = theme_object
+                .get("surface")
+                .cloned()
+                .unwrap_or_else(|| json!("#1b1c28"));
+            let text = theme_object
+                .get("text")
+                .cloned()
+                .unwrap_or_else(|| json!("#f4f4f5"));
+            theme_object.insert(
+                "colors".to_string(),
+                json!({
+                    "background": background,
+                    "panel": panel,
+                    "panelAlt": panel,
+                    "accent": accent,
+                    "accentAlt": accent,
+                    "secondary": accent,
+                    "highlight": accent,
+                    "text": text,
+                    "muted": text,
+                    "line": accent,
+                }),
+            );
+        }
+    }
+
+    let store = SettingsStore::default();
+    let mut settings = store.load().unwrap_or_default();
+    settings.codex_app_dream_skin_enabled = true;
+    settings.codex_app_dream_skin_theme = theme_json
+        .get("name")
+        .or_else(|| theme.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or(&id)
+        .to_string();
+    settings.codex_app_dream_skin_theme_config = runtime_theme;
+    if let Some(path) = background_path.as_ref() {
+        settings.codex_app_dream_skin_background_path = path.to_string_lossy().to_string();
+    }
+    settings.codex_app_dream_skin_accent = theme_json
+        .get("accent")
+        .or_else(|| {
+            theme_json
+                .get("colors")
+                .and_then(|colors| colors.get("accent"))
+        })
+        .or_else(|| theme.get("accent"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if let Err(error) = store.save(&settings) {
+        return failed(
+            &format!("主题已下载，但设置保存失败：{error}"),
+            json!({"installed": false, "id": id, "path": theme_path.to_string_lossy()}),
+        );
+    }
+
+    ok(
+        "主题已安装并启用，重新注入或重启 Codex 后生效。",
+        json!({
+            "installed": true,
+            "id": id,
+            "path": theme_path.to_string_lossy(),
+            "backgroundPath": background_path.map(|path| path.to_string_lossy().to_string()),
+            "accent": settings.codex_app_dream_skin_accent,
+        }),
+    )
 }
 
 #[tauri::command]
 pub async fn test_stepwise_settings(settings: BackendSettings) -> CommandResult<Value> {
     match codexx_core::stepwise::test_connection(&settings).await {
         Ok(payload) => {
-            let status = payload.get("status").and_then(Value::as_str).unwrap_or("ok");
-            CommandResult { status: status.to_string(), message: if status == "ok" { "Stepwise 连接测试完成。".to_string() } else { payload.get("error").and_then(Value::as_str).unwrap_or("Stepwise 测试失败").to_string() }, payload }
+            let status = payload
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("ok");
+            CommandResult {
+                status: status.to_string(),
+                message: if status == "ok" {
+                    "Stepwise 连接测试完成。".to_string()
+                } else {
+                    payload
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Stepwise 测试失败")
+                        .to_string()
+                },
+                payload,
+            }
         }
         Err(error) => failed(&format!("Stepwise 测试失败：{error}"), json!({"items":[]})),
     }
 }
 
 #[tauri::command]
-pub async fn generate_stepwise(request: codexx_core::stepwise::StepwiseRequest) -> CommandResult<Value> {
+pub async fn generate_stepwise(
+    request: codexx_core::stepwise::StepwiseRequest,
+) -> CommandResult<Value> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     match codexx_core::stepwise::generate(request, &settings).await {
         Ok(payload) => {
-            let status = payload.get("status").and_then(Value::as_str).unwrap_or("ok");
-            CommandResult { status: status.to_string(), message: payload.get("error").and_then(Value::as_str).unwrap_or("Stepwise 建议已生成").to_string(), payload }
+            let status = payload
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("ok");
+            CommandResult {
+                status: status.to_string(),
+                message: payload
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Stepwise 建议已生成")
+                    .to_string(),
+                payload,
+            }
         }
         Err(error) => failed(&format!("Stepwise 生成失败：{error}"), json!({"items":[]})),
     }
 }
 
 #[tauri::command]
-pub fn inspect_relay_environment() -> CommandResult<codexx_core::relay_environment::RelayEnvironmentReport> {
+pub fn inspect_relay_environment()
+-> CommandResult<codexx_core::relay_environment::RelayEnvironmentReport> {
     let report = codexx_core::relay_environment::inspect_relay_environment();
     ok("中转环境检查完成。", report)
 }

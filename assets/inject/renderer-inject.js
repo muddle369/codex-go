@@ -154,6 +154,7 @@
     document.getElementById(codexDreamSkinStyleId)?.remove();
     document.getElementById(codexDreamSkinCompanionId)?.remove();
     if (!config.enabled) return;
+    if (config.themeConfig && Object.keys(config.themeConfig).length) return;
     const style = document.createElement("style");
     style.id = codexDreamSkinStyleId;
     const accent = /^#[0-9a-f]{3,8}$/i.test(config.accent || "") ? config.accent : "#8b7cff";

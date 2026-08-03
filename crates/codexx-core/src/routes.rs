@@ -133,18 +133,20 @@ pub async fn handle_bridge_request(
             settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
         }
         "/stepwise/settings" => match ctx.settings.get_settings().await {
-            Ok(settings) => Ok(json!({"status":"ok","settings":crate::stepwise::public_settings(&settings)})),
+            Ok(settings) => {
+                Ok(json!({"status":"ok","settings":crate::stepwise::public_settings(&settings)}))
+            }
             Err(error) => Err(error),
         },
-        "/stepwise/generate" => {
-            match ctx.settings.get_settings().await {
-                Ok(settings) => {
-                    let request = serde_json::from_value::<crate::stepwise::StepwiseRequest>(payload.clone()).unwrap_or_default();
-                    crate::stepwise::generate(request, &settings).await
-                }
-                Err(error) => Err(error),
+        "/stepwise/generate" => match ctx.settings.get_settings().await {
+            Ok(settings) => {
+                let request =
+                    serde_json::from_value::<crate::stepwise::StepwiseRequest>(payload.clone())
+                        .unwrap_or_default();
+                crate::stepwise::generate(request, &settings).await
             }
-        }
+            Err(error) => Err(error),
+        },
         "/user-scripts/list" => ctx.runtime.user_script_inventory().await,
         "/user-scripts/set-enabled" => {
             let enabled = payload

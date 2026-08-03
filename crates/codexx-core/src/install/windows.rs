@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use super::{InstallOptions, MANAGER_BINARY, SILENT_BINARY, install_root_or_default, option_or_current_exe};
+use super::{
+    InstallOptions, MANAGER_BINARY, SILENT_BINARY, install_root_or_default, option_or_current_exe,
+};
 
 const UNINSTALL_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGO";
 const LEGACY_UNINSTALL_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexX";
@@ -81,7 +83,13 @@ pub fn uninstall_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn remove_legacy_manager_shortcuts(install_root: &Path) {
-    for name in ["CodexGO Manager.lnk", "CodexGO 管理工具.lnk", "CodexX Manager.lnk", "CodexX 管理工具.lnk", "CodexX 绠＄悊宸ュ叿.lnk"] {
+    for name in [
+        "CodexGO Manager.lnk",
+        "CodexGO 管理工具.lnk",
+        "CodexX Manager.lnk",
+        "CodexX 管理工具.lnk",
+        "CodexX 绠＄悊宸ュ叿.lnk",
+    ] {
         let _ = std::fs::remove_file(install_root.join(name));
     }
 }
