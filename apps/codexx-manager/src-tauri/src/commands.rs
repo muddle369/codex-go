@@ -63,6 +63,15 @@ pub struct SettingsPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ThemeMarketPayload {
+    pub index_url: String,
+    pub themes: Value,
+}
+
+const THEME_MARKET_INDEX_URL: &str =
+    "https://raw.githubusercontent.com/muddle369/codex-go-themes/main/index.json";
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalSessionsPayload {
     pub db_path: String,
@@ -1014,6 +1023,11 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let target_for_settings = target_provider.clone();
+    let home = codexx_core::relay_config::default_codex_home_dir();
+    codexx_core::codex_app_state::capture_app_state_snapshot_nonfatal(
+        &home,
+        "manager.sync_providers_now.before",
+    );
     let result = tauri::async_runtime::spawn_blocking(move || {
         codexx_data::run_provider_sync_with_target(None, target_provider.as_deref())
     })
@@ -1021,6 +1035,10 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
     .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
     match result {
         Ok(sync) => {
+            codexx_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+                &home,
+                "manager.sync_providers_now.after",
+            );
             if is_success_sync_status(&sync.status) {
                 persist_provider_sync_selection(
                     target_for_settings
@@ -1093,6 +1111,93 @@ pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
             failed_script_market_payload(&format!("脚本实验室加载失败：{error}")),
         ),
     }
+}
+
+#[tauri::command]
+pub async fn refresh_theme_market() -> CommandResult<ThemeMarketPayload> {
+    let payload = |themes: Value| ThemeMarketPayload {
+        index_url: THEME_MARKET_INDEX_URL.to_string(),
+        themes,
+    };
+    match reqwest::get(THEME_MARKET_INDEX_URL).await {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(themes) => ok("主题市场已刷新。", payload(themes)),
+                Err(error) => failed(
+                    &format!("主题市场清单解析失败：{error}"),
+                    payload(json!({ "themes": [] })),
+                ),
+            },
+            Err(error) => failed(
+                &format!("主题市场加载失败：{error}"),
+                payload(json!({ "themes": [] })),
+            ),
+        },
+        Err(error) => failed(
+            &format!("主题市场加载失败：{error}"),
+            payload(json!({ "themes": [] })),
+        ),
+    }
+}
+
+#[tauri::command]
+pub async fn install_theme(id: String) -> CommandResult<Value> {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return failed("主题 id 不能为空。", json!({"installed": false}));
+    }
+    let index = match reqwest::get(THEME_MARKET_INDEX_URL).await {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => match response.json::<Value>().await { Ok(value) => value, Err(error) => return failed(&format!("主题清单解析失败：{error}"), json!({"installed": false})) },
+            Err(error) => return failed(&format!("主题市场加载失败：{error}"), json!({"installed": false})),
+        },
+        Err(error) => return failed(&format!("主题市场加载失败：{error}"), json!({"installed": false})),
+    };
+    let Some(theme) = index.get("themes").and_then(Value::as_array).and_then(|themes| themes.iter().find(|theme| theme.get("id").and_then(Value::as_str) == Some(id.as_str()))) else {
+        return failed("主题清单中未找到该主题。", json!({"installed": false}));
+    };
+    let Some(theme_url) = theme.get("theme_url").or_else(|| theme.get("themeUrl")).and_then(Value::as_str) else {
+        return failed("该主题没有可下载地址。", json!({"installed": false}));
+    };
+    let body = match reqwest::get(theme_url).await {
+        Ok(response) => match response.error_for_status() { Ok(response) => match response.bytes().await { Ok(bytes) => bytes, Err(error) => return failed(&format!("主题下载失败：{error}"), json!({"installed": false})) }, Err(error) => return failed(&format!("主题下载失败：{error}"), json!({"installed": false})) },
+        Err(error) => return failed(&format!("主题下载失败：{error}"), json!({"installed": false})),
+    };
+    let target = codexx_core::paths::default_app_state_dir().join("dream-skin/themes").join(&id).join("theme.json");
+    if let Some(parent) = target.parent() { if let Err(error) = fs::create_dir_all(parent) { return failed(&format!("主题目录创建失败：{error}"), json!({"installed": false})); } }
+    match fs::write(&target, body) {
+        Ok(()) => ok("主题已保存到本地主题库。", json!({"installed": true, "id": id, "path": target.to_string_lossy()})),
+        Err(error) => failed(&format!("主题保存失败：{error}"), json!({"installed": false})),
+    }
+}
+
+#[tauri::command]
+pub async fn test_stepwise_settings(settings: BackendSettings) -> CommandResult<Value> {
+    match codexx_core::stepwise::test_connection(&settings).await {
+        Ok(payload) => {
+            let status = payload.get("status").and_then(Value::as_str).unwrap_or("ok");
+            CommandResult { status: status.to_string(), message: if status == "ok" { "Stepwise 连接测试完成。".to_string() } else { payload.get("error").and_then(Value::as_str).unwrap_or("Stepwise 测试失败").to_string() }, payload }
+        }
+        Err(error) => failed(&format!("Stepwise 测试失败：{error}"), json!({"items":[]})),
+    }
+}
+
+#[tauri::command]
+pub async fn generate_stepwise(request: codexx_core::stepwise::StepwiseRequest) -> CommandResult<Value> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    match codexx_core::stepwise::generate(request, &settings).await {
+        Ok(payload) => {
+            let status = payload.get("status").and_then(Value::as_str).unwrap_or("ok");
+            CommandResult { status: status.to_string(), message: payload.get("error").and_then(Value::as_str).unwrap_or("Stepwise 建议已生成").to_string(), payload }
+        }
+        Err(error) => failed(&format!("Stepwise 生成失败：{error}"), json!({"items":[]})),
+    }
+}
+
+#[tauri::command]
+pub fn inspect_relay_environment() -> CommandResult<codexx_core::relay_environment::RelayEnvironmentReport> {
+    let report = codexx_core::relay_environment::inspect_relay_environment();
+    ok("中转环境检查完成。", report)
 }
 
 #[tauri::command]
@@ -1552,6 +1657,10 @@ pub fn switch_relay_profile(
     let store = SettingsStore::default();
     let previous_active_relay_id = request.previous_active_relay_id;
     let settings = normalize_settings_before_save(request.settings);
+    codexx_core::codex_app_state::capture_app_state_snapshot_nonfatal(
+        &home,
+        "manager.switch_relay_profile.before",
+    );
     log_manager_event(
         "manager.switch_relay_profile.start",
         json!({
@@ -1566,6 +1675,10 @@ pub fn switch_relay_profile(
         &previous_active_relay_id,
     ) {
         Ok(result) => {
+            codexx_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+                &home,
+                "manager.switch_relay_profile.after",
+            );
             let status = codexx_core::relay_config::relay_status_from_home(&home);
             log_manager_event(
                 "manager.switch_relay_profile.ok",
@@ -2463,6 +2576,7 @@ fn quick_relay_profile(
         auto_compact_limit: String::new(),
         model_insert_mode: Default::default(),
         model_list: String::new(),
+        audio_transcription_model: String::new(),
         user_agent: String::new(),
     }
 }

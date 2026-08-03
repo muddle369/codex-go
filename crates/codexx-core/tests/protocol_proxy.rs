@@ -1,12 +1,15 @@
 use codexx_core::protocol_proxy::{
-    ChatSseToResponsesConverter, chat_completion_to_response,
+    ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_chat_completions_proxy_path, is_models_proxy_path,
-    is_responses_proxy_path, models_url, open_chat_completions_proxy_request,
+    chat_sse_to_responses_sse_with_request, is_audio_transcriptions_proxy_path,
+    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
+    is_responses_proxy_path, models_url,
+    open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
     open_models_proxy_request, open_responses_proxy_request,
-    open_responses_proxy_request_with_settings, responses_error_from_upstream,
-    responses_to_chat_completions, send_upstream_request_with_header_timeout,
-    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
+    open_responses_proxy_request_with_settings, override_audio_transcription_model,
+    responses_compact_url, responses_error_from_upstream, responses_to_chat_completions,
+    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
+    upstream_stream_header_timeout,
 };
 use codexx_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
@@ -133,6 +136,64 @@ fn proxy_route_matchers_accept_ccswitch_codex_aliases() {
     for path in ["/models", "/v1/models", "/v1/v1/models", "/codex/v1/models"] {
         assert!(is_models_proxy_path(path), "{path}");
     }
+
+    for path in [
+        "/audio/transcriptions",
+        "/v1/audio/transcriptions",
+        "/v1/v1/audio/transcriptions",
+        "/codex/v1/audio/transcriptions",
+    ] {
+        assert!(is_audio_transcriptions_proxy_path(path), "{path}");
+    }
+}
+
+#[test]
+fn audio_transcription_model_override_replaces_existing_model() {
+    let boundary = "codex-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-4o-mini-transcribe\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\0DATA\r\n--{boundary}--\r\n"
+    );
+    let converted = override_audio_transcription_model(
+        body.as_bytes(),
+        &format!("multipart/form-data; boundary={boundary}"),
+        "whisper-1",
+    )
+    .unwrap();
+    let converted = String::from_utf8_lossy(&converted);
+    assert!(converted.contains("\r\nwhisper-1\r\n"));
+    assert!(!converted.contains("gpt-4o-mini-transcribe"));
+    assert!(converted.contains("RIFF\0DATA"));
+}
+
+#[test]
+fn audio_transcription_model_override_is_transparent_when_empty() {
+    let body = b"binary-audio-body";
+    assert_eq!(
+        override_audio_transcription_model(body, "multipart/form-data; boundary=x", "").unwrap(),
+        body
+    );
+}
+
+#[test]
+fn audio_transcriptions_url_normalizes_base_url() {
+    assert_eq!(
+        audio_transcriptions_url("https://007.007ai.cc/v1"),
+        "https://007.007ai.cc/v1/audio/transcriptions"
+    );
+    assert_eq!(
+        audio_transcriptions_url("https://007.007ai.cc"),
+        "https://007.007ai.cc/v1/audio/transcriptions"
+    );
+}
+
+#[test]
+fn responses_compact_proxy_uses_compact_upstream_route() {
+    assert!(is_responses_compact_proxy_path("/v1/responses/compact"));
+    assert!(!is_responses_compact_proxy_path("/v1/responses"));
+    assert_eq!(
+        responses_compact_url("https://api.example.test/v1"),
+        "https://api.example.test/v1/responses/compact"
+    );
 }
 
 #[test]
@@ -205,6 +266,31 @@ fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
         !serde_json::to_string(&converted)
             .unwrap()
             .contains("\"developer\"")
+    );
+}
+
+#[test]
+fn responses_request_skips_contentless_metadata_items() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "deepseek-chat",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [{ "type": "custom", "name": "exec" }]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"],
+        json!([{ "role": "user", "content": "hello" }])
     );
 }
 
@@ -1475,6 +1561,90 @@ async fn chat_completions_proxy_passes_through_original_user_agent_when_unconfig
 
     let request = server.finish();
     assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+#[tokio::test]
+async fn audio_transcriptions_proxy_uses_configured_model_override() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&request);
+            let Some((headers, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or_default();
+            if body.len() >= content_length {
+                break;
+            }
+        }
+        let response_body = r#"{"text":"ok"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "audio",
+            "name": "Audio",
+            "baseUrl": format!("http://{address}/v1"),
+            "upstreamBaseUrl": format!("http://{address}/v1"),
+            "apiKey": "sk-test",
+            "protocol": "responses",
+            "relayMode": "pureApi",
+            "audioTranscriptionModel": "whisper-1"
+        }],
+        "activeRelayId": "audio"
+    });
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let boundary = "codex-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-4o-mini-transcribe\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\r\n--{boundary}--\r\n"
+    );
+
+    let upstream = open_audio_transcriptions_proxy_request(
+        body.as_bytes(),
+        &format!("multipart/form-data; boundary={boundary}"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    let request = String::from_utf8_lossy(&server.await.unwrap()).to_string();
+    assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
+    assert!(request.contains("\r\nwhisper-1\r\n"));
+    assert!(!request.contains("gpt-4o-mini-transcribe"));
 }
 
 #[tokio::test]

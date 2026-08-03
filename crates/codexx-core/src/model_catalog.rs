@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::settings::{RelayProfile, SettingsStore};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 const BASE_URL_ENV_KEYS: &[&str] = &[
     "CODEX_PLUS_OPENAI_BASE_URL",
@@ -39,7 +39,15 @@ pub async fn read_codex_model_catalog() -> Value {
     let settings_path = crate::paths::default_settings_path();
     if settings_path.exists() {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
-            return relay_profile_model_catalog_value(&home, &settings.active_relay_profile());
+            let catalog =
+                relay_profile_model_catalog_value(&home, &settings.active_relay_profile());
+            if catalog
+                .get("models")
+                .and_then(Value::as_array)
+                .is_some_and(|models| !models.is_empty())
+            {
+                return catalog;
+            }
         }
     }
     let env = std::env::vars().collect::<HashMap<_, _>>();
@@ -55,6 +63,7 @@ pub async fn read_codex_model_catalog() -> Value {
                 "provider_name": "",
                 "default_model": "",
                 "models": [],
+                "modelMetadata": {},
                 "sources": [],
                 "responses_api": responses_api_status("unknown", "", "")
             });
@@ -73,6 +82,7 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         profile.name.trim()
     };
     let model_count = models.len();
+    let model_metadata = model_ui_metadata_map(&models);
     json!({
         "status": if models.is_empty() { "not_configured" } else { "ok" },
         "path": home.join("config.toml").to_string_lossy(),
@@ -81,6 +91,7 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         "provider_name": provider_name,
         "default_model": default_model,
         "models": models,
+        "modelMetadata": model_metadata,
         "sources": [
             {
                 "id": format!("relay-profile:{}", profile.id),
@@ -94,6 +105,16 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         ],
         "responses_api": responses_api_status("unknown", "", "")
     })
+}
+
+fn model_ui_metadata_map(models: &[String]) -> Value {
+    let mut metadata = Map::new();
+    for model in models {
+        if let Some(value) = crate::model_suffix::model_ui_metadata(model) {
+            metadata.insert(model.clone(), value);
+        }
+    }
+    Value::Object(metadata)
 }
 
 fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
@@ -141,6 +162,7 @@ pub async fn read_codex_model_catalog_from_home(
             "provider_name": provider_name,
             "default_model": "",
             "models": [],
+            "modelMetadata": {},
             "sources": [],
             "responses_api": responses_api_status("unknown", "", "")
         });
@@ -195,6 +217,7 @@ pub async fn read_codex_model_catalog_from_home(
         "not_configured"
     };
     let responses_api = preferred_responses_api_status(&source_statuses);
+    let model_metadata = model_ui_metadata_map(&models);
 
     json!({
         "status": status,
@@ -204,6 +227,7 @@ pub async fn read_codex_model_catalog_from_home(
         "provider_name": provider_name,
         "default_model": default_model,
         "models": models,
+        "modelMetadata": model_metadata,
         "sources": source_statuses,
         "responses_api": responses_api
     })

@@ -1014,6 +1014,16 @@ body {
   grid-column: 1;
 }
 
+.relay-field-audio-model {
+  grid-column: 1;
+}
+
+.relay-field-audio-model .field-help {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .relay-model-list-tools {
   display: grid;
   gap: 8px;
@@ -3015,5 +3025,38 @@ body {
 
   .launch-action-button {
     min-height: auto;
+  }
+}
+
+.form-grid.two-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-field input {
+  min-width: 0;
+  flex: 1;
+}
+
+.market-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .form-grid.two-columns {
+    grid-template-columns: 1fr;
   }
 }

@@ -294,6 +294,7 @@ pub struct UpstreamProxyResponse {
 pub enum UpstreamWireApi {
     Responses,
     ChatCompletions,
+    AudioTranscriptions,
 }
 
 impl UpstreamProxyResponse {
@@ -457,6 +458,17 @@ pub fn is_responses_proxy_path(path: &str) -> bool {
     )
 }
 
+pub fn is_responses_compact_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/responses/compact"
+            | "/v1/responses/compact"
+            | "/v1/v1/responses/compact"
+            | "/codex/v1/responses/compact"
+    )
+}
+
 pub fn is_chat_completions_proxy_path(path: &str) -> bool {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
     matches!(
@@ -476,26 +488,52 @@ pub fn is_models_proxy_path(path: &str) -> bool {
     )
 }
 
+pub fn is_audio_transcriptions_proxy_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    matches!(
+        path,
+        "/audio/transcriptions"
+            | "/v1/audio/transcriptions"
+            | "/v1/v1/audio/transcriptions"
+            | "/codex/v1/audio/transcriptions"
+    )
+}
+
 pub async fn open_responses_proxy_request(
     body: &str,
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_for_path(body, original_user_agent, "/responses").await
+}
+
+pub async fn open_responses_proxy_request_for_path(
+    body: &str,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, original_user_agent)
-        .await
+    open_responses_proxy_request_with_settings_and_user_agent(
+        body,
+        settings,
+        original_user_agent,
+        request_path,
+    )
+    .await
 }
 
 pub async fn open_responses_proxy_request_with_settings(
     body: &str,
     settings: crate::settings::BackendSettings,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None).await
+    open_responses_proxy_request_with_settings_and_user_agent(body, settings, None, "/responses")
+        .await
 }
 
 async fn open_responses_proxy_request_with_settings_and_user_agent(
     body: &str,
     settings: crate::settings::BackendSettings,
     original_user_agent: Option<&str>,
+    request_path: &str,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
@@ -514,7 +552,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     for (attempt, relay) in relays.into_iter().enumerate() {
         validate_upstream(&relay)?;
         let (endpoint, upstream_body, wire_api) =
-            upstream_request_parts(&relay, request_json.clone())?;
+            upstream_request_parts(&relay, request_json.clone(), request_path)?;
         let has_more_candidates = attempt + 1 < relay_count;
         let header_timeout = response_header_timeout(is_stream);
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -674,6 +712,129 @@ pub async fn open_models_proxy_request(
     })
 }
 
+pub async fn open_audio_transcriptions_proxy_request(
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
+    validate_upstream(&relay)?;
+    let content_type = content_type.trim();
+    if content_type.is_empty() {
+        anyhow::bail!("Audio transcriptions 请求缺少 Content-Type");
+    }
+    let body = override_audio_transcription_model(
+        body,
+        content_type,
+        relay.audio_transcription_model.trim(),
+    )?;
+    let endpoint = audio_transcriptions_url(&relay.base_url);
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "protocol_proxy.audio_transcriptions_request",
+        json!({
+            "relayId": relay.id,
+            "relayName": relay.name,
+            "endpoint": endpoint,
+            "wireApi": UpstreamWireApi::AudioTranscriptions,
+            "bodyBytes": body.len(),
+            "modelOverride": if relay.audio_transcription_model.trim().is_empty() { Value::Null } else { json!(relay.audio_transcription_model.trim()) }
+        }),
+    );
+    let upstream = send_upstream_request(
+        crate::http_client::proxied_client(&effective_user_agent(
+            &relay.user_agent,
+            original_user_agent,
+        ))?
+        .post(endpoint)
+        .bearer_auth(relay.api_key.trim())
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(body),
+    )
+    .await?;
+    let status_code = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json; charset=utf-8")
+        .to_string();
+
+    Ok(UpstreamProxyResponse {
+        status_code,
+        is_stream: false,
+        content_type,
+        wire_api: UpstreamWireApi::AudioTranscriptions,
+        response: upstream,
+    })
+}
+
+pub fn override_audio_transcription_model(
+    body: &[u8],
+    content_type: &str,
+    model: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Ok(body.to_vec());
+    }
+    let disposition = b"name=\"model\"";
+    if let Some(field_position) = find_bytes(body, disposition) {
+        let value_start = find_bytes(&body[field_position..], b"\r\n\r\n")
+            .map(|offset| field_position + offset + 4)
+            .ok_or_else(|| anyhow::anyhow!("音频转写 model 字段格式无效"))?;
+        let value_end = find_bytes(&body[value_start..], b"\r\n")
+            .map(|offset| value_start + offset)
+            .ok_or_else(|| anyhow::anyhow!("音频转写 model 字段缺少结束标记"))?;
+        let mut next = Vec::with_capacity(body.len() + model.len());
+        next.extend_from_slice(&body[..value_start]);
+        next.extend_from_slice(model.as_bytes());
+        next.extend_from_slice(&body[value_end..]);
+        return Ok(next);
+    }
+
+    let boundary = multipart_boundary(content_type)
+        .ok_or_else(|| anyhow::anyhow!("音频转写请求缺少 multipart boundary"))?;
+    let closing = format!("--{boundary}--");
+    let closing_position = find_bytes(body, closing.as_bytes())
+        .ok_or_else(|| anyhow::anyhow!("音频转写请求缺少 multipart 结束边界"))?;
+    let prefix = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n"
+    );
+    let mut next = Vec::with_capacity(body.len() + prefix.len());
+    next.extend_from_slice(&body[..closing_position]);
+    next.extend_from_slice(prefix.as_bytes());
+    next.extend_from_slice(&body[closing_position..]);
+    Ok(next)
+}
+
+fn multipart_boundary(content_type: &str) -> Option<String> {
+    content_type
+        .split(';')
+        .skip(1)
+        .find_map(|part| {
+            let (name, value) = part.trim().split_once('=')?;
+            name.trim().eq_ignore_ascii_case("boundary").then(|| {
+                value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string()
+            })
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    (!needle.is_empty())
+        .then(|| {
+            haystack
+                .windows(needle.len())
+                .position(|window| window == needle)
+        })
+        .flatten()
+}
+
 pub async fn open_chat_completions_proxy_request(
     body: &str,
     original_user_agent: Option<&str>,
@@ -733,10 +894,19 @@ fn response_header_timeout(is_stream: bool) -> Duration {
 fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     request_json: Value,
+    request_path: &str,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi)> {
+    let compact = is_responses_compact_proxy_path(request_path);
+    if compact && relay.protocol == RelayProtocol::ChatCompletions {
+        anyhow::bail!("Chat Completions 协议暂不支持 Responses compact 请求");
+    }
     match relay.protocol {
         RelayProtocol::Responses => Ok((
-            responses_url(&relay.base_url),
+            if compact {
+                responses_compact_url(&relay.base_url)
+            } else {
+                responses_url(&relay.base_url)
+            },
             request_json,
             UpstreamWireApi::Responses,
         )),
@@ -890,6 +1060,14 @@ pub fn responses_url(base_url: &str) -> String {
     url
 }
 
+pub fn responses_compact_url(base_url: &str) -> String {
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    if base.to_ascii_lowercase().ends_with("/responses/compact") {
+        return base.to_string();
+    }
+    format!("{}/compact", responses_url(base_url).trim_end_matches('/'))
+}
+
 pub fn models_url(base_url: &str) -> String {
     let skip_version_prefix = base_url.trim().ends_with('#');
     let mut base = base_url
@@ -910,6 +1088,26 @@ pub fn models_url(base_url: &str) -> String {
         format!("{base}/models")
     } else {
         format!("{base}/v1/models")
+    };
+    while url.contains("/v1/v1") {
+        url = url.replace("/v1/v1", "/v1");
+    }
+    url
+}
+
+pub fn audio_transcriptions_url(base_url: &str) -> String {
+    let skip_version_prefix = base_url.trim().ends_with('#');
+    let base = base_url.trim().trim_end_matches('#').trim_end_matches('/');
+    if base.to_ascii_lowercase().ends_with("/audio/transcriptions") {
+        return base.to_string();
+    }
+    let origin_only = base
+        .split_once("://")
+        .map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
+    let mut url = if skip_version_prefix || has_version_suffix(base) || !origin_only {
+        format!("{base}/audio/transcriptions")
+    } else {
+        format!("{base}/v1/audio/transcriptions")
     };
     while url.contains("/v1/v1") {
         url = url.replace("/v1/v1", "/v1");
@@ -1971,14 +2169,14 @@ fn append_responses_item(
         }
         _ => {
             flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
-            if item.get("role").is_some() || item.get("content").is_some() {
+            if let Some(content) = item.get("content") {
                 let role = responses_role_to_chat_role(item.get("role").and_then(Value::as_str));
+                if content.is_null() && role != "assistant" {
+                    return;
+                }
                 let mut message = json!({
                     "role": role,
-                    "content": responses_content_to_chat_content(
-                        role,
-                        item.get("content").unwrap_or(&Value::Null)
-                        )
+                    "content": responses_content_to_chat_content(role, content)
                 });
                 if role == "assistant" {
                     if !pending_reasoning.is_empty() && pending_tool_calls.is_empty() {

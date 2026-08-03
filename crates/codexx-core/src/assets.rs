@@ -28,15 +28,62 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let helper_url = format!("http://127.0.0.1:{helper_port}");
     let sponsor_images = sponsor_image_data_uris();
     let image_overlay = image_overlay_config(helper_port, settings);
+    let dream_skin = dream_skin_config(settings);
+    let companion = composer_companion_config(settings);
+    let stepwise = stepwise_config(settings);
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN__ = {};\nwindow.__CODEX_PLUS_COMPOSER_COMPANION__ = {};\nwindow.__CODEX_PLUS_STEPWISE__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(&sponsor_images).expect("sponsor images should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         serde_json::to_string(DIAGNOSTIC_BUILD_ID).expect("build id should serialize"),
         serde_json::to_string(&image_overlay).expect("image overlay config should serialize"),
+        serde_json::to_string(&dream_skin).expect("dream skin config should serialize"),
+        serde_json::to_string(&companion).expect("companion config should serialize"),
+        serde_json::to_string(&stepwise).expect("stepwise config should serialize"),
+        serde_json::to_string(&json!({"enabled": settings.codex_app_paste_fix})).expect("paste fix config should serialize"),
         renderer_script(),
     )
+}
+
+fn dream_skin_config(settings: &BackendSettings) -> Value {
+    let background = if settings.codex_app_dream_skin_enabled {
+        image_file_data_uri(Path::new(settings.codex_app_dream_skin_background_path.trim()))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    json!({
+        "enabled": settings.codex_app_dream_skin_enabled,
+        "theme": settings.codex_app_dream_skin_theme,
+        "accent": settings.codex_app_dream_skin_accent,
+        "backgroundDataUrl": background,
+    })
+}
+
+fn composer_companion_config(settings: &BackendSettings) -> Value {
+    let data_url = if settings.codex_app_composer_companion_enabled {
+        image_file_data_uri(Path::new(settings.codex_app_composer_companion_path.trim()))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    json!({
+        "enabled": settings.codex_app_composer_companion_enabled && !data_url.is_empty(),
+        "dataUrl": data_url,
+        "width": settings.codex_app_composer_companion_width,
+        "side": settings.codex_app_composer_companion_side,
+        "offsetX": settings.codex_app_composer_companion_offset_x,
+        "offsetY": settings.codex_app_composer_companion_offset_y,
+    })
+}
+
+fn stepwise_config(settings: &BackendSettings) -> Value {
+    json!({
+        "enabled": settings.codex_app_stepwise_enabled,
+        "directSend": settings.codex_app_stepwise_direct_send,
+        "maxItems": settings.codex_app_stepwise_max_items,
+    })
 }
 
 pub fn image_overlay_config(helper_port: u16, settings: &BackendSettings) -> Value {

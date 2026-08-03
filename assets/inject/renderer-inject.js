@@ -145,6 +145,129 @@
   }
 
   scheduleCodexPlusImageOverlay();
+
+  const codexDreamSkinStyleId = "codex-go-dream-skin-style";
+  const codexDreamSkinCompanionId = "codex-go-composer-companion";
+
+  function installCodexDreamSkin() {
+    const config = window.__CODEX_PLUS_DREAM_SKIN__ || {};
+    document.getElementById(codexDreamSkinStyleId)?.remove();
+    document.getElementById(codexDreamSkinCompanionId)?.remove();
+    if (!config.enabled) return;
+    const style = document.createElement("style");
+    style.id = codexDreamSkinStyleId;
+    const accent = /^#[0-9a-f]{3,8}$/i.test(config.accent || "") ? config.accent : "#8b7cff";
+    const background = config.backgroundDataUrl ? `url(${JSON.stringify(config.backgroundDataUrl)})` : "none";
+    style.textContent = `:root{--codex-go-dream-accent:${accent};--codex-go-dream-background:${background}}body{background-image:var(--codex-go-dream-background)!important;background-size:cover!important;background-position:center!important;background-attachment:fixed!important}.codex-go-dream-skin-accent{color:var(--codex-go-dream-accent)!important}`;
+    document.documentElement.appendChild(style);
+  }
+
+  function installCodexComposerCompanion() {
+    const config = window.__CODEX_PLUS_COMPOSER_COMPANION__ || {};
+    const existing = document.getElementById(codexDreamSkinCompanionId);
+    existing?.remove();
+    if (!config.enabled || !config.dataUrl) return;
+    const image = document.createElement("img");
+    image.id = codexDreamSkinCompanionId;
+    image.src = config.dataUrl;
+    image.alt = "";
+    image.setAttribute("aria-hidden", "true");
+    Object.assign(image.style, { position: "fixed", width: `${Math.max(48, Math.min(320, Number(config.width) || 96))}px`, height: "auto", pointerEvents: "none", zIndex: "2147483000", userSelect: "none", display: "none" });
+    document.documentElement.appendChild(image);
+    const update = () => {
+      const composer = document.querySelector(".composer-footer, .composer-surface-chrome, [data-testid='composer-footer']");
+      if (!composer) { image.style.display = "none"; return; }
+      const rect = composer.getBoundingClientRect();
+      const width = image.getBoundingClientRect().width || Number(config.width) || 96;
+      const height = image.getBoundingClientRect().height || width;
+      const offsetX = Number(config.offsetX) || 0;
+      const offsetY = Number(config.offsetY) || 0;
+      const side = config.side === "left" || config.side === "right" ? config.side : (rect.left > width + 24 ? "left" : "right");
+      image.style.left = `${Math.round(side === "left" ? rect.left - width - 12 + offsetX : rect.right + 12 + offsetX)}px`;
+      image.style.top = `${Math.round(rect.top + (rect.height - height) / 2 + offsetY)}px`;
+      image.style.display = "block";
+    };
+    image.addEventListener("load", update, { once: true });
+    window.addEventListener("resize", update);
+    window.__codexGoCompanionCleanup?.();
+    window.__codexGoCompanionCleanup = () => { window.removeEventListener("resize", update); image.remove(); };
+    new MutationObserver(update).observe(document.body || document.documentElement, { childList: true, subtree: true });
+    update();
+  }
+
+  function installCodexGoVisuals() {
+    installCodexDreamSkin();
+    installCodexComposerCompanion();
+  }
+
+  installCodexGoVisuals();
+
+  const codexStepwiseButtonId = "codex-go-stepwise-button";
+  const codexStepwisePanelId = "codex-go-stepwise-panel";
+  function installCodexStepwise() {
+    const config = window.__CODEX_PLUS_STEPWISE__ || {};
+    document.getElementById(codexStepwiseButtonId)?.remove();
+    document.getElementById(codexStepwisePanelId)?.remove();
+    if (!config.enabled) return;
+    const composer = document.querySelector(".composer-footer, .composer-surface-chrome, [data-testid='composer-footer']");
+    if (!composer || typeof postJson !== "function") return;
+    const button = document.createElement("button");
+    button.id = codexStepwiseButtonId;
+    button.type = "button";
+    button.textContent = "下一步建议";
+    Object.assign(button.style, { marginLeft: "8px", border: "1px solid rgba(139,124,255,.6)", borderRadius: "8px", background: "transparent", color: "inherit", padding: "4px 9px", cursor: "pointer" });
+    const panel = document.createElement("div");
+    panel.id = codexStepwisePanelId;
+    Object.assign(panel.style, { position: "fixed", zIndex: "2147483001", display: "none", maxWidth: "360px", padding: "8px", border: "1px solid rgba(139,124,255,.45)", borderRadius: "10px", background: "#20202a", color: "#f3f4f6", boxShadow: "0 12px 32px rgba(0,0,0,.32)" });
+    const render = (items) => {
+      panel.innerHTML = "";
+      if (!items?.length) { panel.textContent = "暂无下一步建议"; return; }
+      items.slice(0, Number(config.maxItems) || 6).forEach((item) => {
+        const action = document.createElement("button");
+        action.type = "button";
+        action.textContent = item.label ? `${item.label}：${item.prompt}` : item.prompt;
+        Object.assign(action.style, { display: "block", width: "100%", margin: "3px 0", padding: "6px 8px", border: "0", borderRadius: "6px", background: "transparent", color: "inherit", textAlign: "left", cursor: "pointer" });
+        action.onclick = () => {
+          const input = document.querySelector("textarea, [contenteditable='true']");
+          if (!input) return;
+          if (input instanceof HTMLTextAreaElement) { input.value = item.prompt; input.dispatchEvent(new Event("input", { bubbles: true })); }
+          else { input.textContent = item.prompt; input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: item.prompt })); }
+          panel.style.display = "none";
+        };
+        panel.appendChild(action);
+      });
+    };
+    button.onclick = async () => {
+      const input = document.querySelector("textarea, [contenteditable='true']");
+      const response = await postJson("/stepwise/generate", { lastUserMessage: input?.value || "", lastAssistantMessage: document.querySelector("[data-message-author='assistant']")?.textContent || "", threadTitle: document.title, pageUrl: location.href }).catch(() => ({ status: "failed", items: [] }));
+      render(response?.items || []);
+      const rect = button.getBoundingClientRect();
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.bottom + 8}px`;
+      panel.style.display = "block";
+    };
+    composer.appendChild(button);
+    document.documentElement.appendChild(panel);
+  }
+  installCodexStepwise();
+
+  if (window.__CODEX_PLUS_PASTE_FIX__?.enabled) {
+    document.addEventListener("paste", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLTextAreaElement) && !(target instanceof HTMLElement && target.isContentEditable)) return;
+      const text = event.clipboardData?.getData("text/plain");
+      if (!text) return;
+      event.preventDefault();
+      if (target instanceof HTMLTextAreaElement) {
+        const start = target.selectionStart ?? target.value.length;
+        const end = target.selectionEnd ?? target.value.length;
+        target.setRangeText(text, start, end, "end");
+      } else {
+        document.execCommand("insertText", false, text);
+      }
+      target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste", data: text }));
+    }, true);
+  }
   window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   window.__codexConversationTimelineNodeCounter = window.__codexConversationTimelineNodeCounter || 0;
   let upstreamBranchDefaultsCache = new Map();
@@ -1155,7 +1278,13 @@
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
-  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
+  const codexServiceTierSupportedFastModels = new Set([
+    "gpt-5.4",
+    "gpt-5.5",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+  ]);
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
 
@@ -1814,11 +1943,32 @@
 
   function installCodexServiceTierDispatcherPatch() {
     if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+    const dispatcherFromModule = (module) => {
+      const values = module && typeof module === "object" ? Object.values(module) : [];
+      const singleton = values.find((candidate) => candidate
+        && typeof candidate === "object"
+        && typeof candidate.dispatchMessage === "function"
+        && typeof candidate.subscribe === "function");
+      if (singleton) return singleton;
+      const dispatcherClass = values.find((candidate) => typeof candidate === "function"
+        && typeof candidate.getInstance === "function"
+        && typeof candidate.prototype?.dispatchMessage === "function");
+      return dispatcherClass?.getInstance?.() || null;
+    };
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("setting-storage-");
-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
-        const dispatcher = dispatcherClass?.getInstance?.();
+        let dispatcher = null;
+        let assetPrefix = "";
+        for (const candidatePrefix of ["setting-storage-", "vscode-api-"]) {
+          try {
+            dispatcher = dispatcherFromModule(await loadCodexAppModule(candidatePrefix));
+            if (dispatcher) {
+              assetPrefix = candidatePrefix;
+              break;
+            }
+          } catch {
+          }
+        }
         if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
         if (dispatcher.__codexServiceTierOriginalDispatchMessage) {
           window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
@@ -1832,7 +1982,7 @@
           return dispatcher.__codexServiceTierOriginalDispatchMessage(nextType, nextPayload);
         };
         window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
-        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", {});
+        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", { assetPrefix });
       } catch (error) {
         sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
           errorName: error?.name || "",
@@ -4062,22 +4212,36 @@
     return codexModelCatalogPromise;
   }
 
-  function modelReasoningEfforts() {
-    return ["minimal", "low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
+  function codexPlusModelMetadata(modelName) {
+    const metadata = codexModelCatalog.modelMetadata || codexModelCatalog.model_metadata;
+    const normalizedName = String(modelName || "").trim();
+    const exact = metadata && typeof metadata === "object" ? metadata[normalizedName] : null;
+    const matchedKey = !exact && metadata && typeof metadata === "object"
+      ? Object.keys(metadata).find((key) => key.toLowerCase() === normalizedName.toLowerCase())
+      : null;
+    const value = exact || (matchedKey ? metadata[matchedKey] : null);
+    return value && typeof value === "object" ? value : null;
+  }
+
+  function modelReasoningEfforts(modelName) {
+    const supported = codexPlusModelMetadata(modelName)?.supportedReasoningEfforts;
+    if (Array.isArray(supported) && supported.length > 0) return supported.map((entry) => ({ ...entry }));
+    return ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
   }
 
   function codexPlusModelDescriptor(modelName) {
+    const metadata = codexPlusModelMetadata(modelName);
     return {
       model: modelName,
       id: modelName,
       slug: modelName,
       name: modelName,
-      displayName: modelName,
-      description: codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
+      displayName: metadata?.displayName || modelName,
+      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
       hidden: false,
       isDefault: (codexModelCatalog.default_model || codexModelCatalog.model) === modelName,
-      defaultReasoningEffort: "medium",
-      supportedReasoningEfforts: modelReasoningEfforts(),
+      defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
+      supportedReasoningEfforts: modelReasoningEfforts(modelName),
     };
   }
 
@@ -4112,9 +4276,18 @@
     let changed = false;
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
-      if (customModels.includes(item.model) && item.hidden !== false) {
-        item.hidden = false;
-        changed = true;
+      if (customModels.includes(item.model)) {
+        if (item.hidden !== false) {
+          item.hidden = false;
+          changed = true;
+        }
+        const descriptor = codexPlusModelDescriptor(item.model);
+        for (const key of ["displayName", "description", "defaultReasoningEffort", "supportedReasoningEfforts"]) {
+          if (descriptor[key] !== undefined && JSON.stringify(item[key]) !== JSON.stringify(descriptor[key])) {
+            item[key] = descriptor[key];
+            changed = true;
+          }
+        }
       }
     });
     customModels.forEach((modelName) => {
@@ -4191,13 +4364,37 @@
     return changed;
   }
 
+  function modelJsonResponseLooksPatchable(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    const descriptorArrays = [
+      payload.models,
+      payload.data,
+      payload.result,
+      payload.pages?.[0]?.data,
+      payload.result?.data,
+      payload.result?.models,
+      payload.message?.result?.data,
+      payload.message?.result?.models,
+    ];
+    if (descriptorArrays.some((value) => modelArrayLooksPatchable(value))) return true;
+    const hasModelContainerSignal = "defaultModel" in payload
+      || "default_model" in payload
+      || "availableModels" in payload
+      || "available_models" in payload
+      || "hiddenModels" in payload
+      || "hidden_models" in payload
+      || "modelMetadata" in payload
+      || "model_metadata" in payload;
+    return hasModelContainerSignal && Array.isArray(payload.models)
+      && payload.models.every((value) => typeof value === "string");
+  }
+
   async function patchModelJsonResponse(payload) {
     if (!codexPlusModelUnlockEnabled()) return payload;
     if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-    if (!payload || typeof payload !== "object") return payload;
+    if (!modelJsonResponseLooksPatchable(payload)) return payload;
     try {
       patchModelContainer(payload);
-      patchObjectGraphForModels(payload, new WeakSet(), 0);
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
@@ -4259,7 +4456,7 @@
         const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
         client.getDynamicConfig = (name, options) => {
           const result = originalGetDynamicConfig(name, options);
-          return patchStatsigModelDynamicConfig(result);
+          return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
         };
         client.__codexPlusModelWhitelistPatched = true;
       }
@@ -4270,93 +4467,29 @@
     });
   }
 
-  function patchObjectGraphForModels(root, visited, depth = 0) {
-    if (!root || typeof root !== "object" || visited.has(root) || depth > 5) return false;
-    visited.add(root);
-    let changed = patchModelContainer(root);
-    if (root instanceof Element || root === window || root === document || root === document.body || root === document.documentElement) return changed;
-    for (const key of Object.keys(root)) {
-      if (key === "ownerDocument" || key === "parentElement" || key === "parentNode" || key === "children" || key === "childNodes") continue;
-      let value;
-      try {
-        value = root[key];
-      } catch {
-        continue;
-      }
-      if (value && typeof value === "object" && patchObjectGraphForModels(value, visited, depth + 1)) changed = true;
-    }
-    return changed;
-  }
-
-  function reactFiberKeys(element) {
-    return Object.keys(element).filter((key) => key.startsWith("__reactFiber") || key.startsWith("__reactInternalInstance") || key.startsWith("__reactProps"));
-  }
-
-  function isWorkspaceChromeNode(node) {
-    if (!node || node.nodeType !== 1) return false;
-    if (node.closest?.('[data-app-action-sidebar-section-heading="Chats"], [data-app-action-sidebar-section-heading="Projects"], [data-app-action-sidebar-thread-id], [data-app-action-sidebar-project-row], [data-app-action-sidebar-project-id]')) {
-      return false;
-    }
-    return !!node.closest?.("main aside");
-  }
-
-  function patchReactModelStateNodes() {
-    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
-    return [document.body, ...document.querySelectorAll(selector)].filter((node) => node && !isWorkspaceChromeNode(node));
-  }
-
-  function shouldScheduleReactModelStatePatch(mutations) {
-    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
-    if (!mutations) return false;
-    const selector = "[role='menu'], [role='dialog'], [role='listbox'], [data-radix-popper-content-wrapper]";
-    return mutations.some((mutation) => [...mutation.addedNodes].some((node) => {
-      if (node.nodeType !== 1 || isWorkspaceChromeNode(node)) return false;
-      return !!node.matches?.(selector) || !!node.querySelector?.(selector);
-    }));
-  }
-
-  function schedulePatchReactModelState() {
-    if (window.__codexPlusReactModelStatePatchPending) return;
-    window.__codexPlusReactModelStatePatchPending = true;
-    clearTimeout(window.__codexPlusReactModelStatePatchTimer);
-    window.__codexPlusReactModelStatePatchTimer = setTimeout(() => {
-      window.__codexPlusReactModelStatePatchPending = false;
-      window.__codexPlusReactModelStatePatchTimer = null;
-      patchReactModelState();
-    }, 120);
-  }
-
-  function patchReactModelState() {
-    const visited = new WeakSet();
-    const nodes = patchReactModelStateNodes();
-    let changed = false;
-    for (const node of nodes.slice(0, 220)) {
-      for (const key of reactFiberKeys(node)) {
-        if (patchObjectGraphForModels(node[key], visited)) changed = true;
-      }
-    }
-    return changed;
-  }
-
   function patchAppServerModelMessages() {
     if (window.__codexPlusModelMessagePatchInstalled) return;
     window.__codexPlusModelMessagePatchInstalled = true;
-    const originalDispatchEvent = window.dispatchEvent;
-    window.dispatchEvent = function patchedCodexPlusDispatchEvent(event) {
+    window.addEventListener("codex-message-from-view", (event) => {
       try {
         const detail = event?.detail;
         const request = detail?.request;
-        if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request" && request?.method === "model/list") {
+        if (detail?.type === "mcp-request" && request?.method === "model/list") {
           request.params = { ...(request.params || {}), includeHidden: true };
-          if (request.id != null) codexPlusModelListRequestIds.add(String(request.id));
+          if (request.id != null) {
+            const requestId = String(request.id);
+            codexPlusModelListRequestIds.add(requestId);
+            if (codexPlusModelListRequestIds.size > 64) {
+              codexPlusModelListRequestIds.delete(codexPlusModelListRequestIds.values().next().value);
+            }
+            window.setTimeout(() => codexPlusModelListRequestIds.delete(requestId), 30_000);
+          }
         }
-        if (event?.type === "message") patchMcpModelResponseData(event.data);
       } catch (error) {
         window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
         window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
       }
-      return originalDispatchEvent.call(this, event);
-    };
+    }, true);
 
     window.addEventListener("message", (event) => {
       try {
@@ -4369,12 +4502,16 @@
   }
 
   function patchMcpModelResponseData(data) {
+    if (!codexPlusModelUnlockEnabled()) return false;
     if (data?.type !== "mcp-response") return false;
     const message = data.message || data.response;
     const requestId = message?.id != null ? String(message.id) : "";
-    if (codexPlusModelListRequestIds.size > 0 && !codexPlusModelListRequestIds.has(requestId)) return false;
+    if (codexPlusModelListRequestIds.size === 0 || !codexPlusModelListRequestIds.has(requestId)) return false;
     codexPlusModelListRequestIds.delete(requestId);
-    return patchModelContainer(data) || patchModelContainer(message) || patchModelContainer(message?.result) || patchModelContainer(message?.result?.data);
+    let changed = false;
+    if (patchModelArray(message?.result?.data, true)) changed = true;
+    if (patchModelArray(message?.result?.models, true)) changed = true;
+    return changed;
   }
 
   function appServerModelRequestMethod(method, params) {
@@ -4388,8 +4525,6 @@
       if (Array.isArray(result)) patchModelArray(result, true);
       if (Array.isArray(result?.data)) patchModelArray(result.data, true);
       if (Array.isArray(result?.models)) patchModelArray(result.models, true);
-      patchModelContainer(result);
-      patchObjectGraphForModels(result, new WeakSet(), 0);
       sendCodexPlusDiagnostic("model_app_server_result_patched", {
         method,
         modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
@@ -4463,16 +4598,14 @@
 
   function runCodexModelWhitelistRefreshPass() {
     if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
-    let changed = false;
     try {
       patchStatsigModelWhitelist();
-      if (patchReactModelState()) changed = true;
       installAppServerModelRequestPatch();
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
     }
-    return changed;
+    return false;
   }
 
   function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
@@ -4505,11 +4638,7 @@
       loadCodexModelCatalog();
       return;
     }
-    if (shouldScheduleReactModelStatePatch(mutations)) {
-      scheduleCodexModelWhitelistRefresh();
-    } else {
-      runCodexModelWhitelistRefreshPass();
-    }
+    runCodexModelWhitelistRefreshPass();
   }
 
   function threadIdVariants(sessionId) {

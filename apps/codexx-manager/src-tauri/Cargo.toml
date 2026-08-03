@@ -19,6 +19,7 @@ async-trait = "0.1"
 codexx-core = { path = "../../../crates/codexx-core" }
 codexx-data = { path = "../../../crates/codexx-data" }
 directories.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["custom-protocol", "image-ico", "image-png", "tray-icon"] }

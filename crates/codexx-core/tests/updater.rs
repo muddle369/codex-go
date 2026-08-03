@@ -40,7 +40,10 @@ fn github_payload_selects_platform_installer() {
             Some("CodexGO-1.0.9-windows-x64-setup.exe")
         );
     } else if cfg!(target_os = "macos") {
-        assert_eq!(release.asset_name.as_deref(), Some("CodexGO-1.0.9-macos-x64.dmg"));
+        assert_eq!(
+            release.asset_name.as_deref(),
+            Some("CodexGO-1.0.9-macos-x64.dmg")
+        );
     } else {
         assert_eq!(release.asset_name.as_deref(), None);
     }
@@ -104,6 +107,36 @@ fn asset_selection_prefers_current_platform_artifacts() {
     } else if cfg!(target_os = "macos") {
         let selected = select_update_asset(&assets).unwrap();
         assert_eq!(selected.name, "CodexGO-1.0.9-macos-x64.dmg");
+    } else {
+        assert!(select_update_asset(&assets).is_none());
+    }
+}
+
+#[test]
+fn asset_selection_prefers_native_macos_architecture_when_wrong_arch_is_first() {
+    let native_arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => panic!("unexpected macOS architecture in test: {other}"),
+    };
+    let other_arch = if native_arch == "x64" { "arm64" } else { "x64" };
+    let assets = vec![
+        (
+            format!("CodexGO-1.0.9-macos-{other_arch}.dmg"),
+            "https://example.test/wrong-arch.dmg".to_string(),
+        ),
+        (
+            format!("CodexGO-1.0.9-macos-{native_arch}.dmg"),
+            "https://example.test/native-arch.dmg".to_string(),
+        ),
+    ];
+
+    if cfg!(target_os = "macos") {
+        let selected = select_update_asset(&assets).unwrap();
+        assert!(
+            selected.name.contains(&format!("-macos-{native_arch}.")),
+            "macOS updater must select the native architecture DMG"
+        );
     } else {
         assert!(select_update_asset(&assets).is_none());
     }

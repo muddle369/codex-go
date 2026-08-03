@@ -248,13 +248,20 @@ where
     let mut keep_launched_on_error = false;
 
     let result: anyhow::Result<LaunchHandle> = async {
+        let home = crate::relay_config::default_codex_home_dir();
         if settings.provider_sync_enabled {
+            crate::codex_app_state::capture_app_state_snapshot_nonfatal(&home, "launcher.before");
             hooks.run_provider_sync().await?;
+            crate::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+                &home,
+                "launcher.after_provider_sync",
+            );
         }
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
-        let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings);
+        let protocol_proxy_enabled = relay_protocol_proxy_enabled(&settings)
+            || remote_control_provider_proxy_enabled(&settings);
         if protocol_proxy_enabled {
             helper_port = crate::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT;
         }
@@ -263,6 +270,12 @@ where
             helper_started = true;
         }
 
+        if settings.enhancements_enabled {
+            crate::codex_app_state::prepare_projectless_main_window_nonfatal(
+                &home,
+                "launcher.prelaunch",
+            );
+        }
         let launch = hooks
             .launch_codex(&app_dir, debug_port, &settings.codex_extra_args)
             .await?;
@@ -340,6 +353,14 @@ where
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
     settings.active_relay_uses_protocol_proxy()
+}
+
+fn remote_control_provider_proxy_enabled(settings: &BackendSettings) -> bool {
+    if !settings.relay_profiles_enabled {
+        return false;
+    }
+    let profile = settings.active_relay_profile();
+    profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
 
 pub trait IntoLaunchHooks {
@@ -705,14 +726,18 @@ async fn handle_helper_connection(
     remote_addr: Option<SocketAddr>,
 ) -> anyhow::Result<()> {
     let request_bytes = read_http_request(&mut stream).await?;
-    let request = String::from_utf8_lossy(&request_bytes);
-    let request_line = request.lines().next().unwrap_or_default();
+    let header_end = find_header_end(&request_bytes)
+        .ok_or_else(|| anyhow::anyhow!("HTTP 请求缺少完整请求头"))?;
+    let request_headers = String::from_utf8_lossy(&request_bytes[..header_end]);
+    let request_body_bytes = &request_bytes[header_end + 4..];
+    let request_body = String::from_utf8_lossy(request_body_bytes);
+    let request_line = request_headers.lines().next().unwrap_or_default();
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let raw_path = parts.next().unwrap_or_default();
     let path = raw_path.split('?').next().unwrap_or(raw_path);
-    let request_body = http_request_body(&request);
-    let request_user_agent = header_value_from_request(&request, "user-agent");
+    let request_user_agent = header_value_from_request(&request_headers, "user-agent");
+    let request_content_type = header_value_from_request(&request_headers, "content-type");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -722,14 +747,27 @@ async fn handle_helper_connection(
             "path": path,
             "request_line": request_line,
             "remote_addr": remote_addr_text,
-            "body_bytes": request_body.len()
+            "body_bytes": request_body_bytes.len()
         }),
     );
+
+    if crate::protocol_proxy::is_audio_transcriptions_proxy_path(path) && method == "POST" {
+        return handle_audio_transcriptions_proxy_connection(
+            &mut stream,
+            request_body_bytes,
+            request_content_type.as_deref(),
+            request_user_agent.as_deref(),
+            method,
+            path,
+            remote_addr_text,
+        )
+        .await;
+    }
 
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "POST" {
         return handle_protocol_proxy_connection(
             &mut stream,
-            request_body,
+            request_body.as_ref(),
             request_user_agent.as_deref(),
             method,
             path,
@@ -740,7 +778,7 @@ async fn handle_helper_connection(
     if crate::protocol_proxy::is_chat_completions_proxy_path(path) && method == "POST" {
         return handle_chat_completions_proxy_connection(
             &mut stream,
-            request_body,
+            request_body.as_ref(),
             request_user_agent.as_deref(),
             method,
             path,
@@ -780,11 +818,11 @@ async fn handle_helper_connection(
             )
         } else if path == "/diagnostics/log" && matches!(method, "POST" | "OPTIONS") {
             if method == "POST" {
-                let detail = serde_json::from_str::<serde_json::Value>(request_body)
+                let detail = serde_json::from_str::<serde_json::Value>(request_body.as_ref())
                     .unwrap_or_else(|error| {
                         serde_json::json!({
                             "parse_error": error.to_string(),
-                            "raw": request_body
+                            "raw": request_body.as_ref()
                         })
                     });
                 let event = detail
@@ -976,6 +1014,70 @@ async fn handle_models_proxy_connection(
     Ok(())
 }
 
+async fn handle_audio_transcriptions_proxy_connection(
+    stream: &mut tokio::net::TcpStream,
+    request_body: &[u8],
+    request_content_type: Option<&str>,
+    request_user_agent: Option<&str>,
+    method: &str,
+    path: &str,
+    remote_addr_text: Option<String>,
+) -> anyhow::Result<()> {
+    let upstream = match crate::protocol_proxy::open_audio_transcriptions_proxy_request(
+        request_body,
+        request_content_type.unwrap_or_default(),
+        request_user_agent,
+    )
+    .await
+    {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": error.to_string()
+            }))?;
+            write_http_response(
+                stream,
+                "502 Bad Gateway",
+                "application/json; charset=utf-8",
+                &body,
+            )
+            .await?;
+            log_helper_response(
+                "helper.audio_transcriptions_proxy_failed",
+                method,
+                path,
+                "502 Bad Gateway",
+                remote_addr_text,
+            );
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
+    let status = upstream.status();
+    let is_success = upstream.is_success();
+    let content_type = if upstream.content_type.is_empty() {
+        "application/json; charset=utf-8".to_string()
+    } else {
+        upstream.content_type.clone()
+    };
+    let body = upstream.response.bytes().await?.to_vec();
+    write_http_response(stream, &status, &content_type, &body).await?;
+    log_helper_response(
+        if is_success {
+            "helper.audio_transcriptions_proxy_ok"
+        } else {
+            "helper.audio_transcriptions_proxy_upstream_error"
+        },
+        method,
+        path,
+        &status,
+        remote_addr_text,
+    );
+    stream.shutdown().await?;
+    Ok(())
+}
+
 async fn handle_protocol_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &str,
@@ -986,8 +1088,12 @@ async fn handle_protocol_proxy_connection(
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
     let upstream =
-        match crate::protocol_proxy::open_responses_proxy_request(request_body, request_user_agent)
-            .await
+        match crate::protocol_proxy::open_responses_proxy_request_for_path(
+            request_body,
+            request_user_agent,
+            path,
+        )
+        .await
         {
             Ok(upstream) => upstream,
             Err(error) => {
@@ -1275,7 +1381,7 @@ fn log_helper_response(
 
 #[cfg(test)]
 mod computer_use_tests {
-    use super::{header_value_from_request, overlay_image_content_type};
+    use super::{decode_chunked_body, header_value_from_request, overlay_image_content_type};
     use std::path::Path;
 
     #[test]
@@ -1304,6 +1410,15 @@ mod computer_use_tests {
             Some("Codex/26.614")
         );
     }
+
+    #[test]
+    fn chunked_audio_body_is_decoded_without_touching_binary_bytes() {
+        let encoded = b"4\r\nRIFF\r\n5\r\n\0DATA\r\n0\r\n\r\n";
+        assert_eq!(
+            decode_chunked_body(encoded).unwrap(),
+            Some(b"RIFF\0DATA".to_vec())
+        );
+    }
 }
 
 async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result<Vec<u8>> {
@@ -1311,6 +1426,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result
     let mut chunk = vec![0_u8; 4096];
     let mut header_end = None;
     let mut content_length = 0_usize;
+    let mut chunked = false;
 
     loop {
         let read = stream.read(&mut chunk).await?;
@@ -1322,9 +1438,19 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result
             header_end = find_header_end(&buffer);
             if let Some(end) = header_end {
                 content_length = content_length_from_headers(&buffer[..end]).unwrap_or(0);
+                chunked = transfer_encoding_chunked(&buffer[..end]);
             }
         }
         if let Some(end) = header_end {
+            if chunked {
+                if let Some(decoded) = decode_chunked_body(&buffer[end + 4..])? {
+                    let mut request = Vec::with_capacity(end + 4 + decoded.len());
+                    request.extend_from_slice(&buffer[..end + 4]);
+                    request.extend_from_slice(&decoded);
+                    return Ok(request);
+                }
+                continue;
+            }
             if buffer.len() >= end + 4 + content_length {
                 break;
             }
@@ -1335,6 +1461,61 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result
     }
 
     Ok(buffer)
+}
+
+fn transfer_encoding_chunked(headers: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(headers);
+    text.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("transfer-encoding")
+                && value
+                    .split(',')
+                    .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+        })
+    })
+}
+
+fn decode_chunked_body(encoded: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut decoded = Vec::new();
+    let mut position = 0_usize;
+    loop {
+        let Some(line_offset) = encoded[position..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+        else {
+            return Ok(None);
+        };
+        let line_end = position + line_offset;
+        let size_text = std::str::from_utf8(&encoded[position..line_end])?;
+        let size =
+            usize::from_str_radix(size_text.split(';').next().unwrap_or_default().trim(), 16)
+                .map_err(|_| anyhow::anyhow!("HTTP chunk size 无效"))?;
+        position = line_end + 2;
+        if size == 0 {
+            if encoded[position..]
+                .windows(4)
+                .any(|window| window == b"\r\n\r\n")
+                || encoded.get(position..position + 2) == Some(b"\r\n")
+            {
+                return Ok(Some(decoded));
+            }
+            return Ok(None);
+        }
+        let end = position
+            .checked_add(size)
+            .ok_or_else(|| anyhow::anyhow!("HTTP chunk 过大"))?;
+        if end + 2 > encoded.len() {
+            return Ok(None);
+        }
+        if &encoded[end..end + 2] != b"\r\n" {
+            anyhow::bail!("HTTP chunk 缺少结束 CRLF");
+        }
+        decoded.extend_from_slice(&encoded[position..end]);
+        if decoded.len() > 32 * 1024 * 1024 {
+            anyhow::bail!("HTTP 请求过大");
+        }
+        position = end + 2;
+    }
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
@@ -1351,13 +1532,6 @@ fn content_length_from_headers(headers: &[u8]) -> Option<usize> {
             None
         }
     })
-}
-
-fn http_request_body(request: &str) -> &str {
-    request
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or_default()
 }
 
 fn header_value_from_request(request: &str, header_name: &str) -> Option<String> {
@@ -1528,7 +1702,7 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         debug_port,
         StatusStore::default(),
     )));
-    crate::bridge::install_bridge(
+    let result = crate::bridge::install_bridge(
         websocket_url,
         crate::bridge::BRIDGE_BINDING_NAME,
         Arc::new(move |path, payload| {
@@ -1539,7 +1713,11 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         }),
         &[script],
     )
-    .await
+    .await;
+    if result.is_ok() {
+        crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(debug_port).await;
+    }
+    result
 }
 
 pub fn build_macos_open_command(

@@ -129,6 +129,27 @@ type BackendSettings = {
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
   codexAppImageOverlayOpacity: number;
+  codexAppDreamSkinEnabled: boolean;
+  codexAppDreamSkinTheme: string;
+  codexAppDreamSkinBackgroundPath: string;
+  codexAppDreamSkinAccent: string;
+  codexAppComposerCompanionEnabled: boolean;
+  codexAppComposerCompanionPath: string;
+  codexAppComposerCompanionWidth: number;
+  codexAppComposerCompanionSide: string;
+  codexAppComposerCompanionOffsetX: number;
+  codexAppComposerCompanionOffsetY: number;
+  codexAppStepwiseEnabled: boolean;
+  codexAppStepwiseDirectSend: boolean;
+  codexAppStepwiseBaseUrl: string;
+  codexAppStepwiseApiKey: string;
+  codexAppStepwiseApiKeyEnv: string;
+  codexAppStepwiseModel: string;
+  codexAppStepwiseMaxItems: number;
+  codexAppStepwiseMaxInputChars: number;
+  codexAppStepwiseMaxOutputTokens: number;
+  codexAppStepwiseTimeoutMs: number;
+  codexAppPasteFix: boolean;
   codexGoalsEnabled: boolean;
   launchMode: LaunchMode;
   relayBaseUrl: string;
@@ -168,6 +189,7 @@ type RelayProfile = {
   contextWindow: string;
   autoCompactLimit: string;
   modelList: string;
+  audioTranscriptionModel: string;
   userAgent: string;
   aggregate?: RelayAggregateConfig | null;
 };
@@ -448,6 +470,12 @@ type UpdateResult = CommandResult<{
   progress?: number;
 }>;
 
+type UpdateInstallProgress = {
+  active: boolean;
+  percent: number;
+  message: string;
+};
+
 type ScriptMarketItem = {
   id: string;
   name: string;
@@ -472,6 +500,11 @@ type ScriptMarketResult = CommandResult<{
     scripts: ScriptMarketItem[];
   };
   user_scripts: UserScriptInventory;
+}>;
+
+type ThemeMarketResult = CommandResult<{
+  indexUrl: string;
+  themes: { themes?: Array<{ id?: string; name?: string; author?: string; preview_url?: string; theme_url?: string }> };
 }>;
 
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
@@ -578,6 +611,27 @@ const defaultSettings: BackendSettings = {
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
   codexAppImageOverlayOpacity: 35,
+  codexAppDreamSkinEnabled: false,
+  codexAppDreamSkinTheme: "",
+  codexAppDreamSkinBackgroundPath: "",
+  codexAppDreamSkinAccent: "",
+  codexAppComposerCompanionEnabled: false,
+  codexAppComposerCompanionPath: "",
+  codexAppComposerCompanionWidth: 96,
+  codexAppComposerCompanionSide: "auto",
+  codexAppComposerCompanionOffsetX: 0,
+  codexAppComposerCompanionOffsetY: 0,
+  codexAppStepwiseEnabled: false,
+  codexAppStepwiseDirectSend: false,
+  codexAppStepwiseBaseUrl: "",
+  codexAppStepwiseApiKey: "",
+  codexAppStepwiseApiKeyEnv: "STEPWISE_API_KEY",
+  codexAppStepwiseModel: "",
+  codexAppStepwiseMaxItems: 6,
+  codexAppStepwiseMaxInputChars: 6000,
+  codexAppStepwiseMaxOutputTokens: 500,
+  codexAppStepwiseTimeoutMs: 8000,
+  codexAppPasteFix: false,
   codexGoalsEnabled: false,
   launchMode: "patch",
   relayBaseUrl: "",
@@ -602,6 +656,7 @@ const defaultSettings: BackendSettings = {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      audioTranscriptionModel: "",
       userAgent: "",
     },
   ],
@@ -664,7 +719,13 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
   const [watcher, setWatcher] = useState<WatcherResult | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
+  const [updateInstallProgress, setUpdateInstallProgress] = useState<UpdateInstallProgress>({
+    active: false,
+    percent: 0,
+    message: "尚未开始下载安装包。",
+  });
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
+  const [themeMarket, setThemeMarket] = useState<ThemeMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
     debugPort: "9329",
@@ -738,6 +799,14 @@ export function App() {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
       if (!silent || !isSuccessStatus(result.status)) showResultNotice("脚本实验室", result, { silentSuccess: true });
+    }
+  };
+
+  const refreshThemeMarket = async () => {
+    const result = await run(() => call<ThemeMarketResult>("refresh_theme_market"));
+    if (result) {
+      setThemeMarket(result);
+      showResultNotice("Dream Skin 主题市场", result, { silentSuccess: true });
     }
   };
 
@@ -1160,6 +1229,7 @@ export function App() {
   };
 
   const performUpdate = async () => {
+    if (updateInstallProgress.active) return;
     const release =
       update?.latestVersion && update.assetName && update.assetUrl
         ? {
@@ -1170,10 +1240,54 @@ export function App() {
             asset_url: update.assetUrl,
           }
         : null;
-    const result = await run(() => call<UpdateResult>("perform_update", { release }));
-    if (result) {
-      setUpdate(result);
-      showNotice("更新安装", result.message, result.status);
+    setUpdateInstallProgress({
+      active: true,
+      percent: 8,
+      message: "正在准备安装包下载…",
+    });
+    const startedAt = Date.now();
+    const progressTimer = window.setInterval(() => {
+      setUpdateInstallProgress((current) => {
+        if (!current.active) return current;
+        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        const nextPercent =
+          elapsedSeconds < 3
+            ? Math.min(24, current.percent + 4)
+            : elapsedSeconds < 15
+              ? Math.min(68, current.percent + 3)
+              : elapsedSeconds < 45
+                ? Math.min(86, current.percent + 1)
+                : Math.min(99, current.percent + 0.2);
+        const message =
+          elapsedSeconds < 3
+            ? "正在获取 GitHub Release 信息…"
+            : elapsedSeconds < 15
+              ? "正在下载安装包…"
+              : elapsedSeconds < 45
+                ? "正在写入安装包…"
+                : "下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。";
+        return { ...current, percent: nextPercent, message };
+      });
+    }, 500);
+    try {
+      const result = await run(() => call<UpdateResult>("perform_update", { release }));
+      if (result) {
+        setUpdate(result);
+        setUpdateInstallProgress({
+          active: false,
+          percent: isSuccessStatus(result.status) ? 100 : 0,
+          message: result.message,
+        });
+        showNotice("更新安装", result.message, result.status);
+      } else {
+        setUpdateInstallProgress({
+          active: false,
+          percent: 0,
+          message: "安装更新失败，请查看错误提示后重试。",
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
     }
   };
 
@@ -1768,6 +1882,14 @@ export function App() {
           }));
         }
       },
+      chooseDreamSkinBackgroundPath: async () => {
+        const selected = await open({ directory: false, multiple: false, title: "选择 Dream Skin 背景图", filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }] });
+        if (typeof selected === "string" && selected.trim()) setSettingsForm((current) => ({ ...current, codexAppDreamSkinBackgroundPath: selected.trim(), codexAppDreamSkinEnabled: true }));
+      },
+      chooseComposerCompanionPath: async () => {
+        const selected = await open({ directory: false, multiple: false, title: "选择 Composer Companion 图片", filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }] });
+        if (typeof selected === "string" && selected.trim()) setSettingsForm((current) => ({ ...current, codexAppComposerCompanionPath: selected.trim(), codexAppComposerCompanionEnabled: true }));
+      },
       saveManualCodexAppPath: async () => {
         const appPath = launchForm.appPath.trim();
         if (!appPath) {
@@ -1795,6 +1917,15 @@ export function App() {
       refreshLiveContextEntries,
       syncLiveContextEntries,
       refreshScriptMarket,
+      refreshThemeMarket,
+      installTheme: async (id: string) => {
+        const result = await run(() => call<CommandResult<{ installed: boolean }>>("install_theme", { id }));
+        if (result) showResultNotice("Dream Skin 主题", result);
+      },
+      testStepwiseSettings: async (settings: BackendSettings) => {
+        const result = await run(() => call<CommandResult<{ items?: unknown[] }>>("test_stepwise_settings", { settings }));
+        if (result) showResultNotice("Stepwise", result);
+      },
       installMarketScript,
       setUserScriptEnabled,
       deleteUserScript,
@@ -1983,7 +2114,7 @@ export function App() {
             />
           ) : null}
           {route === "enhance" ? (
-            <EnhanceScreen form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
+            <EnhanceScreen form={settingsForm} themeMarket={themeMarket} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
           {route === "zedRemote" ? (
@@ -2001,7 +2132,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "about" ? <AboutScreen overview={overview} update={update} logs={logs} diagnostics={diagnostics} actions={actions} /> : null}
+          {route === "about" ? <AboutScreen overview={overview} update={update} updateInstallProgress={updateInstallProgress} logs={logs} diagnostics={diagnostics} actions={actions} /> : null}
           {route === "settings" ? (
             <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
@@ -2224,6 +2355,8 @@ type Actions = {
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
   chooseImageOverlayPath: () => Promise<void>;
+  chooseDreamSkinBackgroundPath: () => Promise<void>;
+  chooseComposerCompanionPath: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
@@ -2236,6 +2369,9 @@ type Actions = {
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshScriptMarket: () => Promise<void>;
+  refreshThemeMarket: () => Promise<void>;
+  installTheme: (id: string) => Promise<void>;
+  testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   installMarketScript: (id: string) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
@@ -2556,10 +2692,12 @@ function envConflictSourceLabel(source: string): string {
 
 function EnhanceScreen({
   form,
+  themeMarket,
   onFormChange,
   actions,
 }: {
   form: BackendSettings;
+  themeMarket: ThemeMarketResult | null;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
@@ -2634,6 +2772,45 @@ function EnhanceScreen({
               </select>
             </Field>
           </div>
+          <Panel>
+            <CardHead title="Dream Skin" detail="主题视觉和 Composer Companion，默认关闭；保存后重新注入 Codex 生效。" />
+            <CardContent>
+              <div className="feature-grid">
+                <FeatureToggle title="启用 Dream Skin" detail="为 Codex 页面应用主题背景和强调色。" checked={form.codexAppDreamSkinEnabled} disabled={!masterEnabled} onChange={(value) => onFormChange({ ...form, codexAppDreamSkinEnabled: value })} />
+                <FeatureToggle title="启用 Composer Companion" detail="在输入框旁显示主题伴侣图片，不拦截鼠标操作。" checked={form.codexAppComposerCompanionEnabled} disabled={!masterEnabled} onChange={(value) => onFormChange({ ...form, codexAppComposerCompanionEnabled: value })} />
+                <FeatureToggle title="粘贴修复" detail="将多行文本稳定写入 Codex 输入框，减少粘贴后内容丢失或格式异常。" checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => onFormChange({ ...form, codexAppPasteFix: value })} />
+              </div>
+              <div className="form-grid two-columns">
+                <Field label="主题名称"><Input value={form.codexAppDreamSkinTheme} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppDreamSkinTheme: event.currentTarget.value })} placeholder="例如：Dream Skin" /></Field>
+                <Field label="强调色"><Input value={form.codexAppDreamSkinAccent} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppDreamSkinAccent: event.currentTarget.value })} placeholder="#8b7cff" /></Field>
+                <Field label="背景图片"><div className="inline-field"><Input value={form.codexAppDreamSkinBackgroundPath} readOnly placeholder="未选择" /><Button onClick={() => void actions.chooseDreamSkinBackgroundPath()} size="sm" variant="outline">选择</Button></div></Field>
+                <Field label="伴侣图片"><div className="inline-field"><Input value={form.codexAppComposerCompanionPath} readOnly placeholder="未选择" /><Button onClick={() => void actions.chooseComposerCompanionPath()} size="sm" variant="outline">选择</Button></div></Field>
+                <Field label="伴侣宽度"><Input type="number" min={48} max={320} value={form.codexAppComposerCompanionWidth} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppComposerCompanionWidth: Number(event.currentTarget.value) || 96 })} /></Field>
+                <Field label="伴侣位置"><select className="select-input" disabled={!masterEnabled} value={form.codexAppComposerCompanionSide} onChange={(event) => onFormChange({ ...form, codexAppComposerCompanionSide: event.currentTarget.value })}><option value="auto">自动</option><option value="left">左侧</option><option value="right">右侧</option></select></Field>
+              </div>
+              <div className="market-toolbar"><Button onClick={() => void actions.refreshThemeMarket()} variant="outline"><RefreshCw className="h-4 w-4" />刷新主题市场</Button><span>{themeMarket?.status === "ok" ? `${themeMarket.themes.themes?.length ?? 0} 个主题` : "CodexGO 主题仓库"}</span></div>
+              {themeMarket?.themes.themes?.length ? <div className="script-market-grid">{themeMarket.themes.themes.map((theme) => <div className="script-market-card" key={theme.id || theme.name}><div className="script-market-card-body"><strong>{theme.name || theme.id || "未命名主题"}</strong><small>{theme.author || "CodexGO 社区"}</small><Button size="sm" variant="outline" onClick={() => { onFormChange({ ...form, codexAppDreamSkinEnabled: true, codexAppDreamSkinTheme: theme.name || theme.id || "" }); if (theme.id) void actions.installTheme(theme.id); }}>安装并选择</Button></div></div>)}</div> : null}
+              <Toolbar><Button onClick={() => void actions.saveSettings()}>保存 Dream Skin 设置</Button></Toolbar>
+            </CardContent>
+          </Panel>
+          <Panel>
+            <CardHead title="Stepwise 分步建议" detail="根据当前对话生成可直接发送的下一步建议，默认关闭。" />
+            <CardContent>
+              <div className="feature-grid">
+                <FeatureToggle title="启用 Stepwise" detail="在 Codex 输入区域附近显示后续操作建议。" checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => onFormChange({ ...form, codexAppStepwiseEnabled: value })} />
+                <FeatureToggle title="允许直接发送" detail="点击建议后直接写入或发送到 Codex 输入框。" checked={form.codexAppStepwiseDirectSend} disabled={!masterEnabled} onChange={(value) => onFormChange({ ...form, codexAppStepwiseDirectSend: value })} />
+              </div>
+              <div className="form-grid two-columns">
+                <Field label="Base URL"><Input value={form.codexAppStepwiseBaseUrl} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppStepwiseBaseUrl: event.currentTarget.value })} placeholder="https://api.example.com/v1" /></Field>
+                <Field label="模型"><Input value={form.codexAppStepwiseModel} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppStepwiseModel: event.currentTarget.value })} placeholder="例如 gpt-5.4-mini" /></Field>
+                <Field label="API Key"><Input type="password" value={form.codexAppStepwiseApiKey} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKey: event.currentTarget.value })} placeholder="可留空，使用环境变量" /></Field>
+                <Field label="API Key 环境变量"><Input value={form.codexAppStepwiseApiKeyEnv} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKeyEnv: event.currentTarget.value })} /></Field>
+                <Field label="建议数量"><Input type="number" min={0} max={6} value={form.codexAppStepwiseMaxItems} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppStepwiseMaxItems: Math.max(0, Math.min(6, Number(event.currentTarget.value) || 0)) })} /></Field>
+                <Field label="超时毫秒"><Input type="number" min={1000} max={60000} value={form.codexAppStepwiseTimeoutMs} disabled={!masterEnabled} onChange={(event) => onFormChange({ ...form, codexAppStepwiseTimeoutMs: Math.max(1000, Math.min(60000, Number(event.currentTarget.value) || 8000)) })} /></Field>
+              </div>
+              <Toolbar><Button onClick={() => void actions.saveSettings()}>保存 Stepwise 设置</Button><Button variant="outline" onClick={() => void actions.testStepwiseSettings(form)}>测试连接</Button></Toolbar>
+            </CardContent>
+          </Panel>
           <div className="hint-line">
             <Info className="h-4 w-4" />
             <span>如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁、强制解锁入口和特殊插件强制安装。</span>
@@ -3092,16 +3269,20 @@ function MaintenanceScreen({
 function AboutScreen({
   overview,
   update,
+  updateInstallProgress,
   logs,
   diagnostics,
   actions,
 }: {
   overview: OverviewResult | null;
   update: UpdateResult | null;
+  updateInstallProgress: UpdateInstallProgress;
   logs: LogsResult | null;
   diagnostics: DiagnosticsResult | null;
   actions: Actions;
 }) {
+  const displayProgress = updateInstallProgress.active ? updateInstallProgress.percent : (update?.progress ?? updateInstallProgress.percent);
+  const progressLabel = Math.round(displayProgress);
   return (
     <>
       <Panel>
@@ -3131,12 +3312,30 @@ function AboutScreen({
             <Metric label="状态" value={update?.status ?? "not_checked"} />
             <Metric label="最新版本" value={update?.latestVersion ?? "未检查"} />
             <Metric label="资源" value={update?.assetName ?? "-"} />
-            <Metric label="进度" value={`${update?.progress ?? 0}%`} />
+            <Metric label="进度" value={`${progressLabel}%`} />
           </div>
           <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || "尚未检查 GitHub Release；更新会下载并启动安装包。"} />
+          <div className="provider-sync-progress" data-active={updateInstallProgress.active}>
+            <div className="provider-sync-progress-head">
+              <strong>{updateInstallProgress.active ? "正在下载更新" : "更新下载进度"}</strong>
+              <span>{progressLabel}%</span>
+            </div>
+            <div
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={progressLabel}
+              className="provider-sync-progress-bar"
+              role="progressbar"
+            >
+              <div className="provider-sync-progress-fill" style={{ width: `${displayProgress}%` }} />
+            </div>
+            <small>{updateInstallProgress.message}</small>
+          </div>
           <Toolbar>
             <Button onClick={() => void actions.checkUpdate()}>检查更新</Button>
-            <Button variant="secondary" onClick={() => void actions.performUpdate()}>下载并运行安装包</Button>
+            <Button disabled={updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
+              {updateInstallProgress.active ? "正在下载…" : "下载并运行安装包"}
+            </Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -3863,6 +4062,22 @@ function RelayProfileEditor({
                 从上游获取
               </Button>
             </div>
+          </Field>
+        ) : null}
+        {showApiFields ? (
+          <Field className="relay-field-audio-model" label="音频转写模型">
+            <Input
+              list={`audio-transcription-models-${profile.id}`}
+              value={profile.audioTranscriptionModel}
+              onChange={(event) => updateDraft({ audioTranscriptionModel: event.currentTarget.value })}
+              placeholder="留空则跟随 Codex，可选择或手动输入"
+            />
+            <datalist id={`audio-transcription-models-${profile.id}`}>
+              {Array.from(new Set(profile.modelList.split(/[\r\n,]+/).map((model) => model.trim()).filter(Boolean))).map((model) => (
+                <option key={model} value={model} />
+              ))}
+            </datalist>
+            <div className="field-help">仅用于音频转写接口；留空时保留 Codex 请求中的原始模型。</div>
           </Field>
         ) : null}
         {showApiFields ? (
@@ -5270,6 +5485,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             contextWindow: "",
             autoCompactLimit: "",
             modelList: "",
+            audioTranscriptionModel: "",
             userAgent: "",
           },
         ];
@@ -5326,6 +5542,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         contextWindow: "",
         autoCompactLimit: "",
         modelList: "",
+        audioTranscriptionModel: "",
       },
       null,
     );
@@ -5352,6 +5569,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     contextWindow: profile.contextWindow || "",
     autoCompactLimit: profile.autoCompactLimit || "",
     modelList: profile.modelList || "",
+    audioTranscriptionModel: profile.audioTranscriptionModel || "",
     userAgent: profile.userAgent || "",
     aggregate: null,
   };
@@ -5962,6 +6180,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     contextWindow: "",
     autoCompactLimit: "",
     modelList: "",
+    audioTranscriptionModel: "",
     userAgent: "",
   };
   return withGeneratedRelayFiles(next);
@@ -5991,6 +6210,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       contextWindow: "",
       autoCompactLimit: "",
       modelList: "",
+      audioTranscriptionModel: "",
       userAgent: "",
       aggregate: {
         strategy: "failover",

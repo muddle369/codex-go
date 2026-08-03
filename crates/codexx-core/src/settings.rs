@@ -81,6 +81,8 @@ pub struct RelayProfile {
     pub model_insert_mode: RelayModelInsertMode,
     #[serde(rename = "modelList", default)]
     pub model_list: String,
+    #[serde(rename = "audioTranscriptionModel", default)]
+    pub audio_transcription_model: String,
     #[serde(
         rename = "userAgent",
         default,
@@ -141,6 +143,7 @@ impl Default for RelayProfile {
             auto_compact_limit: String::new(),
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
+            audio_transcription_model: String::new(),
             user_agent: String::new(),
         }
     }
@@ -240,6 +243,48 @@ pub struct BackendSettings {
         deserialize_with = "deserialize_image_overlay_opacity"
     )]
     pub codex_app_image_overlay_opacity: u8,
+    #[serde(rename = "codexAppDreamSkinEnabled", default)]
+    pub codex_app_dream_skin_enabled: bool,
+    #[serde(rename = "codexAppDreamSkinTheme", default)]
+    pub codex_app_dream_skin_theme: String,
+    #[serde(rename = "codexAppDreamSkinBackgroundPath", default)]
+    pub codex_app_dream_skin_background_path: String,
+    #[serde(rename = "codexAppDreamSkinAccent", default)]
+    pub codex_app_dream_skin_accent: String,
+    #[serde(rename = "codexAppComposerCompanionEnabled", default)]
+    pub codex_app_composer_companion_enabled: bool,
+    #[serde(rename = "codexAppComposerCompanionPath", default)]
+    pub codex_app_composer_companion_path: String,
+    #[serde(rename = "codexAppComposerCompanionWidth", default = "default_companion_width")]
+    pub codex_app_composer_companion_width: u16,
+    #[serde(rename = "codexAppComposerCompanionSide", default)]
+    pub codex_app_composer_companion_side: String,
+    #[serde(rename = "codexAppComposerCompanionOffsetX", default)]
+    pub codex_app_composer_companion_offset_x: i16,
+    #[serde(rename = "codexAppComposerCompanionOffsetY", default)]
+    pub codex_app_composer_companion_offset_y: i16,
+    #[serde(rename = "codexAppStepwiseEnabled", default)]
+    pub codex_app_stepwise_enabled: bool,
+    #[serde(rename = "codexAppStepwiseDirectSend", default)]
+    pub codex_app_stepwise_direct_send: bool,
+    #[serde(rename = "codexAppStepwiseBaseUrl", default)]
+    pub codex_app_stepwise_base_url: String,
+    #[serde(rename = "codexAppStepwiseApiKey", default)]
+    pub codex_app_stepwise_api_key: String,
+    #[serde(rename = "codexAppStepwiseApiKeyEnv", default = "default_stepwise_api_key_env")]
+    pub codex_app_stepwise_api_key_env: String,
+    #[serde(rename = "codexAppStepwiseModel", default)]
+    pub codex_app_stepwise_model: String,
+    #[serde(rename = "codexAppStepwiseMaxItems", default = "default_stepwise_max_items")]
+    pub codex_app_stepwise_max_items: u8,
+    #[serde(rename = "codexAppStepwiseMaxInputChars", default = "default_stepwise_max_input_chars")]
+    pub codex_app_stepwise_max_input_chars: u32,
+    #[serde(rename = "codexAppStepwiseMaxOutputTokens", default = "default_stepwise_max_output_tokens")]
+    pub codex_app_stepwise_max_output_tokens: u32,
+    #[serde(rename = "codexAppStepwiseTimeoutMs", default = "default_stepwise_timeout_ms")]
+    pub codex_app_stepwise_timeout_ms: u64,
+    #[serde(rename = "codexAppPasteFix", default)]
+    pub codex_app_paste_fix: bool,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
     #[serde(rename = "launchMode", default)]
@@ -310,6 +355,27 @@ impl Default for BackendSettings {
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
+            codex_app_dream_skin_enabled: false,
+            codex_app_dream_skin_theme: String::new(),
+            codex_app_dream_skin_background_path: String::new(),
+            codex_app_dream_skin_accent: String::new(),
+            codex_app_composer_companion_enabled: false,
+            codex_app_composer_companion_path: String::new(),
+            codex_app_composer_companion_width: default_companion_width(),
+            codex_app_composer_companion_side: "auto".to_string(),
+            codex_app_composer_companion_offset_x: 0,
+            codex_app_composer_companion_offset_y: 0,
+            codex_app_stepwise_enabled: false,
+            codex_app_stepwise_direct_send: false,
+            codex_app_stepwise_base_url: String::new(),
+            codex_app_stepwise_api_key: String::new(),
+            codex_app_stepwise_api_key_env: default_stepwise_api_key_env(),
+            codex_app_stepwise_model: String::new(),
+            codex_app_stepwise_max_items: default_stepwise_max_items(),
+            codex_app_stepwise_max_input_chars: default_stepwise_max_input_chars(),
+            codex_app_stepwise_max_output_tokens: default_stepwise_max_output_tokens(),
+            codex_app_stepwise_timeout_ms: default_stepwise_timeout_ms(),
+            codex_app_paste_fix: false,
             codex_goals_enabled: false,
             launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
@@ -364,6 +430,7 @@ impl BackendSettings {
                 auto_compact_limit: String::new(),
                 model_insert_mode: RelayModelInsertMode::Patch,
                 model_list: String::new(),
+                audio_transcription_model: String::new(),
                 user_agent: String::new(),
             };
         }
@@ -408,6 +475,7 @@ impl BackendSettings {
             auto_compact_limit: String::new(),
             model_insert_mode: RelayModelInsertMode::Patch,
             model_list: String::new(),
+            audio_transcription_model: String::new(),
             user_agent: String::new(),
         }
     }
@@ -449,6 +517,30 @@ pub fn default_api_key_env() -> String {
 
 fn default_image_overlay_opacity() -> u8 {
     35
+}
+
+fn default_companion_width() -> u16 {
+    96
+}
+
+fn default_stepwise_api_key_env() -> String {
+    "STEPWISE_API_KEY".to_string()
+}
+
+fn default_stepwise_max_items() -> u8 {
+    6
+}
+
+fn default_stepwise_max_input_chars() -> u32 {
+    6000
+}
+
+fn default_stepwise_max_output_tokens() -> u32 {
+    500
+}
+
+fn default_stepwise_timeout_ms() -> u64 {
+    8000
 }
 
 fn clamp_image_overlay_opacity(value: u8) -> u8 {
@@ -674,6 +766,47 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::String(value.to_string()),
         );
     }
+    merge_bool_setting(target, source, "codexAppDreamSkinEnabled");
+    for key in [
+        "codexAppDreamSkinTheme",
+        "codexAppDreamSkinBackgroundPath",
+        "codexAppDreamSkinAccent",
+        "codexAppComposerCompanionPath",
+        "codexAppComposerCompanionSide",
+    ] {
+        if let Some(value) = source.get(key).and_then(Value::as_str) {
+            target.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    merge_bool_setting(target, source, "codexAppComposerCompanionEnabled");
+    merge_bool_setting(target, source, "codexAppStepwiseEnabled");
+    merge_bool_setting(target, source, "codexAppStepwiseDirectSend");
+    merge_bool_setting(target, source, "codexAppPasteFix");
+    for key in [
+        "codexAppStepwiseBaseUrl",
+        "codexAppStepwiseApiKey",
+        "codexAppStepwiseApiKeyEnv",
+        "codexAppStepwiseModel",
+    ] {
+        if let Some(value) = source.get(key).and_then(Value::as_str) {
+            target.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    for key in [
+        "codexAppStepwiseMaxItems",
+        "codexAppStepwiseMaxInputChars",
+        "codexAppStepwiseMaxOutputTokens",
+        "codexAppStepwiseTimeoutMs",
+    ] {
+        if let Some(value) = source.get(key).and_then(Value::as_u64) {
+            target.insert(key.to_string(), Value::Number(value.into()));
+        }
+    }
+    for key in ["codexAppComposerCompanionWidth", "codexAppComposerCompanionOffsetX", "codexAppComposerCompanionOffsetY"] {
+        if let Some(value) = source.get(key).and_then(Value::as_i64) {
+            target.insert(key.to_string(), Value::Number(value.into()));
+        }
+    }
     if let Some(value) = source
         .get("codexAppImageOverlayOpacity")
         .and_then(Value::as_u64)
@@ -897,6 +1030,15 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     settings.codex_app_image_overlay_opacity =
         clamp_image_overlay_opacity(settings.codex_app_image_overlay_opacity);
+    settings.codex_app_composer_companion_width = settings.codex_app_composer_companion_width.clamp(48, 320);
+    if !matches!(settings.codex_app_composer_companion_side.as_str(), "left" | "right" | "auto") {
+        settings.codex_app_composer_companion_side = "auto".to_string();
+    }
+    if !settings.codex_app_dream_skin_accent.trim().is_empty()
+        && !settings.codex_app_dream_skin_accent.trim().starts_with('#')
+    {
+        settings.codex_app_dream_skin_accent.clear();
+    }
     settings
 }
 
@@ -1110,6 +1252,7 @@ mod tests {
         assert!(profile.auto_compact_limit.is_empty());
         assert_eq!(profile.model_insert_mode, RelayModelInsertMode::Patch);
         assert!(profile.model_list.is_empty());
+        assert!(profile.audio_transcription_model.is_empty());
     }
 
     #[test]
@@ -1128,7 +1271,8 @@ mod tests {
                 "contextWindow":"200000",
                 "autoCompactLimit":"160000",
                 "modelInsertMode":"patch",
-                "modelList":"qwen3-coder\ndeepseek-coder"
+                "modelList":"qwen3-coder\ndeepseek-coder",
+                "audioTranscriptionModel":"whisper-1"
             }"#,
         )
         .unwrap();
@@ -1142,6 +1286,7 @@ mod tests {
         assert_eq!(profile.auto_compact_limit, "160000");
         assert_eq!(profile.model_insert_mode, RelayModelInsertMode::Patch);
         assert_eq!(profile.model_list, "qwen3-coder\ndeepseek-coder");
+        assert_eq!(profile.audio_transcription_model, "whisper-1");
     }
 
     #[test]
@@ -1900,5 +2045,14 @@ experimental_bearer_token = "sk-existing""#
 
         assert!(!updated.provider_sync_enabled);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn dream_skin_and_companion_settings_default_to_disabled() {
+        let settings = BackendSettings::default();
+        assert!(!settings.codex_app_dream_skin_enabled);
+        assert!(!settings.codex_app_composer_companion_enabled);
+        assert_eq!(settings.codex_app_composer_companion_width, 96);
+        assert_eq!(settings.codex_app_composer_companion_side, "auto");
     }
 }

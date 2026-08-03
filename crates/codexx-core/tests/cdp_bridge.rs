@@ -426,7 +426,8 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("model_whitelist_refresh_scheduled"));
     assert!(script.contains("available_models"));
     assert!(script.contains("modelWhitelistUnlock"));
-    assert!(script.contains("isWorkspaceChromeNode"));
+    assert!(script.contains("modelJsonResponseLooksPatchable"));
+    assert!(script.contains("codexPlusModelMetadata"));
     assert!(script.contains("refreshCodexModelWhitelistFromScan"));
     assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
 }
