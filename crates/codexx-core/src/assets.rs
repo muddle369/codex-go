@@ -147,6 +147,7 @@ fn dream_skin_runtime_script(settings: &BackendSettings) -> String {
         .replace("__GLASS_VISION_ART_JSON__", &art_json)
         .replace("__DREAM_SKIN_CSS_JSON__", &css_json)
         .replace("__DREAM_SKIN_ART_JSON__", &art_json)
+        .replace("__DREAM_THEME_JSON__", &theme_json)
         .replace("__DREAM_SKIN_THEME_JSON__", &theme_json)
         .replace(
             "__DREAM_SKIN_VERSION_JSON__",
@@ -255,6 +256,7 @@ mod tests {
         let script = injection_script_with_settings(49152, &settings);
         assert!(script.contains("codex-dream-skin"));
         assert!(script.contains("test-theme"));
+        assert!(!script.contains("__DREAM_THEME_JSON__"));
         assert!(!script.contains("__DREAM_SKIN_CSS_JSON__"));
         assert!(!script.contains("__DREAM_SKIN_THEME_JSON__"));
     }
