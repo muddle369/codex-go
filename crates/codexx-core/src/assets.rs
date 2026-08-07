@@ -141,7 +141,7 @@ fn dream_skin_runtime_script(settings: &BackendSettings) -> String {
         .replace("__DREAM_ART_JSON__", &art_json)
         .replace(
             "__DREAM_VERSION_JSON__",
-            &serde_json::to_string("1.2.0").unwrap(),
+            &serde_json::to_string(crate::version::VERSION).unwrap(),
         )
         .replace("__GLASS_VISION_CSS_JSON__", &css_json)
         .replace("__GLASS_VISION_ART_JSON__", &art_json)
@@ -151,7 +151,7 @@ fn dream_skin_runtime_script(settings: &BackendSettings) -> String {
         .replace("__DREAM_SKIN_THEME_JSON__", &theme_json)
         .replace(
             "__DREAM_SKIN_VERSION_JSON__",
-            &serde_json::to_string("1.2.0").unwrap(),
+            &serde_json::to_string(crate::version::VERSION).unwrap(),
         )
         .replace("__DREAM_SKIN_STYLE_REVISION_JSON__", &style_revision)
         .replace("__DREAM_SKIN_PAYLOAD_REVISION_JSON__", &payload_revision);
@@ -256,8 +256,22 @@ mod tests {
         let script = injection_script_with_settings(49152, &settings);
         assert!(script.contains("codex-dream-skin"));
         assert!(script.contains("test-theme"));
+        assert!(script.contains(crate::version::VERSION));
+        assert!(!script.contains("version: \"1.2.0\""));
         assert!(!script.contains("__DREAM_THEME_JSON__"));
         assert!(!script.contains("__DREAM_SKIN_CSS_JSON__"));
         assert!(!script.contains("__DREAM_SKIN_THEME_JSON__"));
+    }
+
+    #[test]
+    fn windows_dream_skin_renderers_use_version_placeholder() {
+        let renderers = [
+            include_str!("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js"),
+            include_str!("../../../assets/inject/upstream/cidala-tiger/windows/renderer-inject.js"),
+        ];
+        for renderer in renderers {
+            assert!(renderer.contains("__DREAM_SKIN_VERSION_JSON__"));
+            assert!(!renderer.contains("version: \"1.2.0\""));
+        }
     }
 }

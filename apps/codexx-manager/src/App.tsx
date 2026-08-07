@@ -2455,40 +2455,6 @@ function OverviewScreen({
   const health = healthItems(overview);
   return (
     <>
-      <Panel className="jojocode-overview">
-        <CardContent>
-          <div className="jojocode-overview-layout">
-            <div className="jojocode-overview-main">
-              <div className="jojocode-overview-mark">
-                <Network className="h-5 w-5" />
-              </div>
-              <div>
-                <span className="eyebrow">生产队的挖掘机-专业AI生成平台</span>
-                <h2>wjj.007ai.cc</h2>
-              </div>
-            </div>
-            <div className="jojocode-overview-side">
-              {platformKind === "windows" ? (
-                <div className="overview-link-actions">
-                  <Button onClick={() => void actions.openExternalUrl("https://wjj.007ai.cc")}>
-                    <ExternalLink className="h-4 w-4" />
-                    打开生产队的挖掘机
-                  </Button>
-                  <Button onClick={() => void actions.copyExternalUrl("https://wjj.007ai.cc")} variant="secondary">
-                    <Copy className="h-4 w-4" />
-                    复制链接
-                  </Button>
-                </div>
-              ) : (
-                <Button onClick={() => void actions.openExternalUrl("https://wjj.007ai.cc")}>
-                  <ExternalLink className="h-4 w-4" />
-                  打开生产队的挖掘机
-                </Button>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
       <Panel>
         <CardHead title="健康检查" detail="概览只展示关键问题，具体配置在对应页面处理" />
         <CardContent>
