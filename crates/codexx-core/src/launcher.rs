@@ -1085,16 +1085,30 @@ async fn handle_audio_transcriptions_proxy_connection(
         upstream.content_type.clone()
     };
     let body = upstream.response.bytes().await?.to_vec();
-    write_http_response(stream, &status, &content_type, &body).await?;
+    let normalized =
+        normalize_audio_transcription_response(status, is_success, &content_type, body);
+    write_http_response(stream, &normalized.status, &content_type, &normalized.body).await?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "helper.audio_transcriptions_response",
+        serde_json::json!({
+            "method": method,
+            "path": path,
+            "status": normalized.status,
+            "success": normalized.success,
+            "textChars": normalized.text_chars,
+            "hasError": normalized.has_error,
+            "remote_addr": remote_addr_text
+        }),
+    );
     log_helper_response(
-        if is_success {
+        if normalized.success {
             "helper.audio_transcriptions_proxy_ok"
         } else {
             "helper.audio_transcriptions_proxy_upstream_error"
         },
         method,
         path,
-        &status,
+        &normalized.status,
         remote_addr_text,
     );
     stream.shutdown().await?;
@@ -1401,12 +1415,69 @@ fn log_helper_response(
     );
 }
 
+struct NormalizedAudioTranscriptionResponse {
+    status: String,
+    body: Vec<u8>,
+    success: bool,
+    text_chars: Option<usize>,
+    has_error: bool,
+}
+
+fn normalize_audio_transcription_response(
+    status: String,
+    success: bool,
+    content_type: &str,
+    body: Vec<u8>,
+) -> NormalizedAudioTranscriptionResponse {
+    let parsed = if content_type.to_ascii_lowercase().contains("json") {
+        serde_json::from_slice::<serde_json::Value>(&body).ok()
+    } else {
+        None
+    };
+    let text_chars = parsed
+        .as_ref()
+        .and_then(|value| value.get("text"))
+        .and_then(serde_json::Value::as_str)
+        .map(|text| text.chars().count());
+    let error_message = parsed
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(|error| error.get("message").or(Some(error)))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let has_error = error_message.is_some();
+
+    if success && (has_error || text_chars.is_none()) {
+        let message = error_message.unwrap_or_else(|| "上游未返回有效的音频转写文本".to_string());
+        return NormalizedAudioTranscriptionResponse {
+            status: "502 Bad Gateway".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({
+                "error": {
+                    "message": format!("音频转写响应无效：{message}")
+                }
+            }))
+            .unwrap_or_else(|_| body.clone()),
+            success: false,
+            text_chars,
+            has_error: true,
+        };
+    }
+
+    NormalizedAudioTranscriptionResponse {
+        status,
+        body,
+        success,
+        text_chars,
+        has_error,
+    }
+}
+
 #[cfg(test)]
 mod computer_use_tests {
     use super::{
         ChunkedBody, ChunkedBodyScan, MAX_HTTP_BODY_BYTES, MAX_HTTP_HEADER_BYTES,
         content_length_body, decode_chunked_body, header_value_from_headers, http_body_framing,
-        overlay_image_content_type, scan_chunked_body,
+        normalize_audio_transcription_response, overlay_image_content_type, scan_chunked_body,
     };
     use std::path::Path;
 
@@ -1497,6 +1568,36 @@ mod computer_use_tests {
                 .status(),
             "413 Payload Too Large"
         );
+    }
+
+    #[test]
+    fn audio_response_rejects_success_status_with_error_payload() {
+        let normalized = normalize_audio_transcription_response(
+            "200 OK".to_string(),
+            true,
+            "application/json",
+            br#"{"error":{"message":"webm unsupported"}}"#.to_vec(),
+        );
+
+        assert_eq!(normalized.status, "502 Bad Gateway");
+        assert!(!normalized.success);
+        assert!(normalized.has_error);
+        assert!(String::from_utf8_lossy(&normalized.body).contains("webm unsupported"));
+    }
+
+    #[test]
+    fn audio_response_accepts_json_text_payload() {
+        let normalized = normalize_audio_transcription_response(
+            "200 OK".to_string(),
+            true,
+            "application/json",
+            r#"{"text":"测试成功"}"#.as_bytes().to_vec(),
+        );
+
+        assert_eq!(normalized.status, "200 OK");
+        assert!(normalized.success);
+        assert_eq!(normalized.text_chars, Some(4));
+        assert!(!normalized.has_error);
     }
 }
 

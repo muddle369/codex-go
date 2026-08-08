@@ -1313,6 +1313,192 @@
     return await codexServiceTierModulePromises.get(namePart);
   }
 
+  const codexAudioTranscriptionPatchVersion = "20260808-webm-to-wav-v1";
+
+  function codexAudioBase64ToBytes(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+
+  function codexAudioBytesToBase64(bytes) {
+    let binary = "";
+    for (let index = 0; index < bytes.length; index += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+    }
+    return btoa(binary);
+  }
+
+  function codexAudioAsciiBytes(value) {
+    return new TextEncoder().encode(value);
+  }
+
+  function codexAudioFindBytes(haystack, needle, startAt = 0) {
+    outer: for (let start = startAt; start <= haystack.length - needle.length; start += 1) {
+      for (let offset = 0; offset < needle.length; offset += 1) {
+        if (haystack[start + offset] !== needle[offset]) continue outer;
+      }
+      return start;
+    }
+    return -1;
+  }
+
+  function codexAudioFindAsciiIgnoreCase(haystack, needle, startAt = 0) {
+    const normalizedNeedle = needle.toLowerCase();
+    outer: for (let start = startAt; start <= haystack.length - needle.length; start += 1) {
+      for (let offset = 0; offset < needle.length; offset += 1) {
+        const value = haystack[start + offset];
+        const normalizedValue = value >= 65 && value <= 90 ? value + 32 : value;
+        if (normalizedValue !== normalizedNeedle.charCodeAt(offset)) continue outer;
+      }
+      return start;
+    }
+    return -1;
+  }
+
+  function codexAudioConcatBytes(...parts) {
+    const totalLength = parts.reduce((total, part) => total + part.length, 0);
+    const result = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const part of parts) {
+      result.set(part, offset);
+      offset += part.length;
+    }
+    return result;
+  }
+
+  async function codexAudioEncodeWav(blob) {
+    const input = await blob.arrayBuffer();
+    const audioContext = new AudioContext();
+    try {
+      const decoded = await audioContext.decodeAudioData(input.slice(0));
+      const sampleRate = 16000;
+      const frameCount = Math.max(1, Math.ceil(decoded.duration * sampleRate));
+      const offline = new OfflineAudioContext(1, frameCount, sampleRate);
+      const source = offline.createBufferSource();
+      source.buffer = decoded;
+      source.connect(offline.destination);
+      source.start();
+      const rendered = await offline.startRendering();
+      const samples = rendered.getChannelData(0);
+      const wav = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(wav);
+      const writeText = (offset, text) => {
+        for (let index = 0; index < text.length; index += 1) view.setUint8(offset + index, text.charCodeAt(index));
+      };
+      writeText(0, "RIFF");
+      view.setUint32(4, 36 + samples.length * 2, true);
+      writeText(8, "WAVE");
+      writeText(12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeText(36, "data");
+      view.setUint32(40, samples.length * 2, true);
+      for (let index = 0; index < samples.length; index += 1) {
+        const sample = Math.max(-1, Math.min(1, samples[index] || 0));
+        view.setInt16(44 + index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      }
+      return new Uint8Array(wav);
+    } finally {
+      await audioContext.close().catch(() => {});
+    }
+  }
+
+  async function codexAudioTranscriptionBodyToWav(body, contentType) {
+    if (typeof body !== "string" || !/multipart\/form-data/i.test(contentType || "")) return body;
+    const boundaryMatch = String(contentType).match(/boundary\s*=\s*(?:"([^"]+)"|([^;\s]+))/i);
+    const boundary = boundaryMatch?.[1] || boundaryMatch?.[2] || "";
+    if (!boundary) return body;
+    const bytes = codexAudioBase64ToBytes(body);
+    const fileTypeOffset = codexAudioFindAsciiIgnoreCase(bytes, "Content-Type: audio/webm");
+    if (fileTypeOffset < 0) return body;
+    const fileStart = codexAudioFindBytes(bytes, codexAudioAsciiBytes("\r\n\r\n"), fileTypeOffset);
+    if (fileStart < 0) return body;
+    const audioStart = fileStart + 4;
+    const audioEnd = codexAudioFindBytes(bytes, codexAudioAsciiBytes(`\r\n--${boundary}`), audioStart);
+    if (audioEnd <= audioStart) return body;
+    const audioBytes = bytes.slice(audioStart, audioEnd);
+    const wavBytes = await codexAudioEncodeWav(new Blob([audioBytes], { type: "audio/webm" }));
+    const prefixText = new TextDecoder().decode(bytes.slice(0, audioStart))
+      .replace(/audio\/webm\b/gi, "audio/wav")
+      .replace(/\.webm\b/gi, ".wav");
+    const nextBody = codexAudioConcatBytes(
+      codexAudioAsciiBytes(prefixText),
+      wavBytes,
+      bytes.slice(audioEnd),
+    );
+    sendCodexPlusDiagnostic("audio_transcription_webm_converted", {
+      inputBytes: audioBytes.length,
+      outputBytes: wavBytes.length,
+      sampleRate: 16000,
+    });
+    return codexAudioBytesToBase64(nextBody);
+  }
+
+  function patchAudioTranscriptionRequestClient(client) {
+    if (!client || typeof client.post !== "function") return false;
+    if (client.__codexAudioTranscriptionPatch === codexAudioTranscriptionPatchVersion) return true;
+    const originalPost = client.__codexAudioOriginalPost || client.post.bind(client);
+    client.__codexAudioOriginalPost = originalPost;
+    client.post = async function codexAudioTranscriptionPatchedPost(url, body, headers, signal) {
+      if (url === "/transcribe") {
+        try {
+          body = await codexAudioTranscriptionBodyToWav(body, headers?.["Content-Type"] || headers?.["content-type"] || "");
+        } catch (error) {
+          sendCodexPlusDiagnostic("audio_transcription_webm_conversion_failed", {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          });
+        }
+      }
+      return originalPost(url, body, headers, signal);
+    };
+    client.__codexAudioTranscriptionPatch = codexAudioTranscriptionPatchVersion;
+    return true;
+  }
+
+  function installAudioTranscriptionRequestPatch() {
+    if (window.__codexAudioTranscriptionPatchInstalled === codexAudioTranscriptionPatchVersion) return;
+    const patch = async () => {
+      try {
+        const module = await loadCodexAppModule("app-initial-");
+        const clients = new Set();
+        for (const candidate of Object.values(module || {})) {
+          if (candidate && typeof candidate.post === "function") clients.add(candidate);
+          if (candidate && typeof candidate.getInstance === "function") {
+            try {
+              const instance = candidate.getInstance();
+              if (instance && typeof instance.post === "function") clients.add(instance);
+            } catch {
+            }
+          }
+        }
+        let patchedCount = 0;
+        for (const client of clients) if (patchAudioTranscriptionRequestClient(client)) patchedCount += 1;
+        if (patchedCount > 0) {
+          window.__codexAudioTranscriptionPatchInstalled = codexAudioTranscriptionPatchVersion;
+          sendCodexPlusDiagnostic("audio_transcription_request_patch_installed", { patchedCount });
+        } else {
+          sendCodexPlusDiagnostic("audio_transcription_request_patch_not_found", {
+            exportCount: Object.keys(module || {}).length,
+          });
+        }
+      } catch (error) {
+        sendCodexPlusDiagnostic("audio_transcription_request_patch_failed", {
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+      }
+    };
+    void patch();
+  }
+
   async function codexSettingStorageModule() {
     const module = await loadCodexAppModule("setting-storage-");
     if (typeof module.n !== "function" || typeof module.s !== "function") {
@@ -8377,6 +8563,7 @@
   }
 
   void loadBackendSettingsForStartup();
+  installAudioTranscriptionRequestPatch();
   void loadCodexServiceTierState();
   installUpstreamBranchDropdownAdapter();
   installUpstreamWorktreeNativeAdapter();
