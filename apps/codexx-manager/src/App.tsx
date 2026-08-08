@@ -1174,7 +1174,11 @@ export function App() {
     }
     const profileId = launchProfileId || defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true);
     if (!profileId) return startup?.setupCompleted === true;
-    if (profileId === settingsForm.activeRelayId && startup?.setupCompleted === true) return true;
+    if (
+      profileId === settingsForm.activeRelayId
+      && profileId !== QUICK_PROFILE_ID
+      && startup?.setupCompleted === true
+    ) return true;
     const result = await run(() => call<RelaySwitchResult>("quick_switch_profile", { request: { profileId } }));
     if (!result) return false;
     await handleRelaySwitchPayload(result);

@@ -1866,6 +1866,7 @@ pub struct QuickSwitchProfileRequest {
 const QUICK_PROFILE_ID: &str = "codexx-quick";
 const QUICK_PROFILE_NAME: &str = "SCD_Ai";
 const QUICK_CONFIG_BASE_URL: &str = codexx_core::brand::OFFICIAL_RELAY_BASE_URL;
+const QUICK_AUDIO_TRANSCRIPTION_MODEL: &str = "gpt-4o-mini-transcribe";
 
 #[tauri::command]
 pub fn switch_relay_profile(
@@ -2031,6 +2032,7 @@ pub fn quick_switch_profile(
         );
     }
     let previous_active_relay_id = settings.active_relay_id.clone();
+    sync_quick_launch_audio_model(&mut settings, &profile_id);
     settings.active_relay_id = profile_id;
     switch_relay_profile(RelayProfileSwitchRequest {
         settings,
@@ -2805,7 +2807,7 @@ fn quick_relay_profile(
         auto_compact_limit: String::new(),
         model_insert_mode: Default::default(),
         model_list: String::new(),
-        audio_transcription_model: String::new(),
+        audio_transcription_model: QUICK_AUDIO_TRANSCRIPTION_MODEL.to_string(),
         user_agent: String::new(),
     }
 }
@@ -2819,6 +2821,19 @@ fn upsert_quick_relay_profile(settings: &mut BackendSettings, profile: RelayProf
         *existing = profile;
     } else {
         settings.relay_profiles.push(profile);
+    }
+}
+
+fn sync_quick_launch_audio_model(settings: &mut BackendSettings, profile_id: &str) {
+    if profile_id != QUICK_PROFILE_ID {
+        return;
+    }
+    if let Some(profile) = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == QUICK_PROFILE_ID)
+    {
+        profile.audio_transcription_model = QUICK_AUDIO_TRANSCRIPTION_MODEL.to_string();
     }
 }
 
@@ -3858,5 +3873,73 @@ model_reasoning_effort = "high"
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("只允许打开 http 或 https 链接"));
+    }
+
+    #[test]
+    fn quick_scd_profile_sets_default_audio_transcription_model() {
+        let profile = quick_relay_profile("sk-test", RelayMode::PureApi, false);
+
+        assert_eq!(
+            profile.audio_transcription_model,
+            QUICK_AUDIO_TRANSCRIPTION_MODEL
+        );
+    }
+
+    #[test]
+    fn upserting_quick_profile_preserves_other_profiles_audio_models() {
+        let mut settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "custom-provider".to_string(),
+                audio_transcription_model: "whisper-custom".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        upsert_quick_relay_profile(
+            &mut settings,
+            quick_relay_profile("sk-test", RelayMode::PureApi, false),
+        );
+
+        assert_eq!(settings.relay_profiles[0].id, "custom-provider");
+        assert_eq!(
+            settings.relay_profiles[0].audio_transcription_model,
+            "whisper-custom"
+        );
+    }
+
+    #[test]
+    fn quick_launch_audio_sync_only_updates_scd_profile() {
+        let mut settings = BackendSettings {
+            relay_profiles: vec![
+                RelayProfile {
+                    id: QUICK_PROFILE_ID.to_string(),
+                    audio_transcription_model: String::new(),
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "custom-provider".to_string(),
+                    audio_transcription_model: "whisper-custom".to_string(),
+                    ..RelayProfile::default()
+                },
+            ],
+            ..BackendSettings::default()
+        };
+
+        sync_quick_launch_audio_model(&mut settings, QUICK_PROFILE_ID);
+        assert_eq!(
+            settings.relay_profiles[0].audio_transcription_model,
+            QUICK_AUDIO_TRANSCRIPTION_MODEL
+        );
+        assert_eq!(
+            settings.relay_profiles[1].audio_transcription_model,
+            "whisper-custom"
+        );
+
+        sync_quick_launch_audio_model(&mut settings, "custom-provider");
+        assert_eq!(
+            settings.relay_profiles[1].audio_transcription_model,
+            "whisper-custom"
+        );
     }
 }

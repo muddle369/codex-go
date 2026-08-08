@@ -725,19 +725,42 @@ async fn handle_helper_connection(
     mut stream: tokio::net::TcpStream,
     remote_addr: Option<SocketAddr>,
 ) -> anyhow::Result<()> {
-    let request_bytes = read_http_request(&mut stream).await?;
-    let header_end = find_header_end(&request_bytes)
-        .ok_or_else(|| anyhow::anyhow!("HTTP 请求缺少完整请求头"))?;
-    let request_headers = String::from_utf8_lossy(&request_bytes[..header_end]);
-    let request_body_bytes = &request_bytes[header_end + 4..];
+    let request = match read_http_request(&mut stream).await {
+        Ok(request) => request,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "helper.request_parse_failed",
+                serde_json::json!({
+                    "status": error.status(),
+                    "error": error.to_string(),
+                    "remote_addr": remote_addr.map(|addr| addr.to_string())
+                }),
+            );
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "failed",
+                "message": error.to_string()
+            }))?;
+            write_http_response(
+                &mut stream,
+                error.status(),
+                "application/json; charset=utf-8",
+                &body,
+            )
+            .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
+    let request_headers = String::from_utf8_lossy(&request.headers);
+    let request_body_bytes = &request.body;
     let request_body = String::from_utf8_lossy(request_body_bytes);
     let request_line = request_headers.lines().next().unwrap_or_default();
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let raw_path = parts.next().unwrap_or_default();
     let path = raw_path.split('?').next().unwrap_or(raw_path);
-    let request_user_agent = header_value_from_request(&request_headers, "user-agent");
-    let request_content_type = header_value_from_request(&request_headers, "content-type");
+    let request_user_agent = header_value_from_headers(&request_headers, "user-agent");
+    let request_content_type = header_value_from_headers(&request_headers, "content-type");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1380,7 +1403,11 @@ fn log_helper_response(
 
 #[cfg(test)]
 mod computer_use_tests {
-    use super::{decode_chunked_body, header_value_from_request, overlay_image_content_type};
+    use super::{
+        ChunkedBody, ChunkedBodyScan, MAX_HTTP_BODY_BYTES, MAX_HTTP_HEADER_BYTES,
+        content_length_body, decode_chunked_body, header_value_from_headers, http_body_framing,
+        overlay_image_content_type, scan_chunked_body,
+    };
     use std::path::Path;
 
     #[test]
@@ -1401,11 +1428,11 @@ mod computer_use_tests {
     }
 
     #[test]
-    fn header_value_from_request_reads_user_agent_case_insensitively() {
-        let request = "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: Codex/26.614\r\nContent-Length: 2\r\n\r\n{}";
+    fn header_value_from_headers_reads_user_agent_case_insensitively() {
+        let request = "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: Codex/26.614\r\nContent-Length: 2";
 
         assert_eq!(
-            header_value_from_request(request, "user-agent").as_deref(),
+            header_value_from_headers(request, "user-agent").as_deref(),
             Some("Codex/26.614")
         );
     }
@@ -1413,19 +1440,222 @@ mod computer_use_tests {
     #[test]
     fn chunked_audio_body_is_decoded_without_touching_binary_bytes() {
         let encoded = b"4\r\nRIFF\r\n5\r\n\0DATA\r\n0\r\n\r\n";
+        let ChunkedBody::Complete(decoded) = decode_chunked_body(encoded).unwrap() else {
+            panic!("expected complete chunked body");
+        };
+        assert_eq!(decoded, b"RIFF\0DATA");
+    }
+
+    #[test]
+    fn chunked_audio_body_accepts_extensions_trailers_and_partial_prefixes() {
+        let encoded = b"3;name=value\r\n\x00\x80\xff\r\n2\r\nAB\r\n0\r\nX-Trace: yes\r\n\r\n";
+        for prefix_len in 0..encoded.len() {
+            assert!(matches!(
+                scan_chunked_body(&encoded[..prefix_len]).unwrap(),
+                ChunkedBodyScan::Incomplete
+            ));
+        }
+        assert!(matches!(
+            scan_chunked_body(encoded).unwrap(),
+            ChunkedBodyScan::Complete
+        ));
+    }
+
+    #[test]
+    fn chunked_audio_body_rejects_oversized_headers_and_payloads() {
+        let oversized_size_line = vec![b'f'; MAX_HTTP_HEADER_BYTES + 1];
         assert_eq!(
-            decode_chunked_body(encoded).unwrap(),
-            Some(b"RIFF\0DATA".to_vec())
+            scan_chunked_body(&oversized_size_line)
+                .unwrap_err()
+                .status(),
+            "400 Bad Request"
+        );
+
+        let oversized_size = format!("{:X}\r\n", MAX_HTTP_BODY_BYTES + 1);
+        assert_eq!(
+            decode_chunked_body(oversized_size.as_bytes())
+                .unwrap_err()
+                .status(),
+            "413 Payload Too Large"
+        );
+    }
+
+    #[test]
+    fn body_framing_rejects_content_length_and_transfer_encoding_together() {
+        let error = http_body_framing(
+            b"POST /v1/audio/transcriptions HTTP/1.1\r\nContent-Length: 4\r\nTransfer-Encoding: chunked",
+        )
+        .unwrap_err();
+        assert_eq!(error.status(), "400 Bad Request");
+    }
+
+    #[test]
+    fn content_length_body_enforces_audio_body_limit() {
+        assert_eq!(
+            content_length_body(&[], MAX_HTTP_BODY_BYTES + 1)
+                .unwrap_err()
+                .status(),
+            "413 Payload Too Large"
         );
     }
 }
 
-async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result<Vec<u8>> {
+const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
+const MAX_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_HTTP_ENCODED_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+struct HttpRequest {
+    headers: Vec<u8>,
+    body: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct HttpRequestReadError {
+    status: &'static str,
+    message: String,
+}
+
+impl HttpRequestReadError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: "400 Bad Request",
+            message: message.into(),
+        }
+    }
+
+    fn payload_too_large() -> Self {
+        Self {
+            status: "413 Payload Too Large",
+            message: format!("HTTP 请求体超过 {MAX_HTTP_BODY_BYTES} 字节限制"),
+        }
+    }
+
+    fn status(&self) -> &'static str {
+        self.status
+    }
+}
+
+impl std::fmt::Display for HttpRequestReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for HttpRequestReadError {}
+
+impl From<std::io::Error> for HttpRequestReadError {
+    fn from(error: std::io::Error) -> Self {
+        Self::bad_request(format!("读取 HTTP 请求失败: {error}"))
+    }
+}
+
+#[derive(Debug)]
+enum HttpBodyFraming {
+    Empty,
+    ContentLength(usize),
+    Chunked,
+}
+
+#[derive(Debug)]
+enum ChunkedBody {
+    Incomplete,
+    Complete(Vec<u8>),
+}
+
+#[derive(Debug)]
+enum ChunkedBodyScan {
+    Incomplete,
+    Complete,
+}
+
+#[derive(Default)]
+struct ChunkedScanState {
+    position: usize,
+    decoded_len: usize,
+    complete: bool,
+}
+
+impl ChunkedScanState {
+    fn advance(&mut self, encoded: &[u8]) -> Result<ChunkedBodyScan, HttpRequestReadError> {
+        if self.complete {
+            return Ok(ChunkedBodyScan::Complete);
+        }
+        loop {
+            let chunk_start = self.position;
+            let Some(line_end_offset) = encoded[chunk_start..]
+                .windows(2)
+                .position(|window| window == b"\r\n")
+            else {
+                if encoded.len().saturating_sub(chunk_start) > MAX_HTTP_HEADER_BYTES {
+                    return Err(HttpRequestReadError::bad_request("chunk size 行过大"));
+                }
+                return Ok(ChunkedBodyScan::Incomplete);
+            };
+            if line_end_offset > MAX_HTTP_HEADER_BYTES {
+                return Err(HttpRequestReadError::bad_request("chunk size 行过大"));
+            }
+            let line_end = chunk_start + line_end_offset;
+            let size_text = std::str::from_utf8(&encoded[chunk_start..line_end])
+                .map_err(|_| HttpRequestReadError::bad_request("chunk size 不是有效 ASCII"))?;
+            let size_token = size_text.split(';').next().unwrap_or_default().trim();
+            let chunk_size = usize::from_str_radix(size_token, 16)
+                .map_err(|_| HttpRequestReadError::bad_request("chunk size 无效"))?;
+            let data_start = line_end + 2;
+
+            if chunk_size == 0 {
+                let mut trailer_start = data_start;
+                loop {
+                    let Some(trailer_end_offset) = encoded[trailer_start..]
+                        .windows(2)
+                        .position(|window| window == b"\r\n")
+                    else {
+                        if encoded.len().saturating_sub(data_start) > MAX_HTTP_HEADER_BYTES {
+                            return Err(HttpRequestReadError::bad_request("chunk trailer 过大"));
+                        }
+                        return Ok(ChunkedBodyScan::Incomplete);
+                    };
+                    if trailer_start + trailer_end_offset - data_start > MAX_HTTP_HEADER_BYTES {
+                        return Err(HttpRequestReadError::bad_request("chunk trailer 过大"));
+                    }
+                    if trailer_end_offset == 0 {
+                        self.position = trailer_start + 2;
+                        self.complete = true;
+                        return Ok(ChunkedBodyScan::Complete);
+                    }
+                    trailer_start += trailer_end_offset + 2;
+                }
+            }
+
+            let next_decoded_len = self
+                .decoded_len
+                .checked_add(chunk_size)
+                .ok_or_else(HttpRequestReadError::payload_too_large)?;
+            if next_decoded_len > MAX_HTTP_BODY_BYTES {
+                return Err(HttpRequestReadError::payload_too_large());
+            }
+            let chunk_end = data_start
+                .checked_add(chunk_size)
+                .ok_or_else(HttpRequestReadError::payload_too_large)?;
+            if encoded.len() < chunk_end + 2 {
+                return Ok(ChunkedBodyScan::Incomplete);
+            }
+            if &encoded[chunk_end..chunk_end + 2] != b"\r\n" {
+                return Err(HttpRequestReadError::bad_request("chunk 数据后缺少 CRLF"));
+            }
+            self.decoded_len = next_decoded_len;
+            self.position = chunk_end + 2;
+        }
+    }
+}
+
+async fn read_http_request(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<HttpRequest, HttpRequestReadError> {
     let mut buffer = Vec::new();
     let mut chunk = vec![0_u8; 4096];
     let mut header_end = None;
-    let mut content_length = 0_usize;
-    let mut chunked = false;
+    let mut framing = HttpBodyFraming::Empty;
+    let mut chunked_scan = ChunkedScanState::default();
 
     loop {
         let read = stream.read(&mut chunk).await?;
@@ -1436,108 +1666,189 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result
         if header_end.is_none() {
             header_end = find_header_end(&buffer);
             if let Some(end) = header_end {
-                content_length = content_length_from_headers(&buffer[..end]).unwrap_or(0);
-                chunked = transfer_encoding_chunked(&buffer[..end]);
+                if end > MAX_HTTP_HEADER_BYTES {
+                    return Err(HttpRequestReadError::bad_request("HTTP 请求头过大"));
+                }
+                framing = http_body_framing(&buffer[..end])?;
+            } else if buffer.len() > MAX_HTTP_HEADER_BYTES {
+                return Err(HttpRequestReadError::bad_request("HTTP 请求头过大"));
             }
         }
         if let Some(end) = header_end {
-            if chunked {
-                if let Some(decoded) = decode_chunked_body(&buffer[end + 4..])? {
-                    let mut request = Vec::with_capacity(end + 4 + decoded.len());
-                    request.extend_from_slice(&buffer[..end + 4]);
-                    request.extend_from_slice(&decoded);
-                    return Ok(request);
+            let body = &buffer[end + 4..];
+            if body.len() > MAX_HTTP_ENCODED_BODY_BYTES {
+                return Err(HttpRequestReadError::payload_too_large());
+            }
+            match framing {
+                HttpBodyFraming::Empty => break,
+                HttpBodyFraming::ContentLength(content_length) => {
+                    if content_length > MAX_HTTP_BODY_BYTES {
+                        return Err(HttpRequestReadError::payload_too_large());
+                    }
+                    if body.len() >= content_length {
+                        break;
+                    }
                 }
-                continue;
+                HttpBodyFraming::Chunked => match chunked_scan.advance(body)? {
+                    ChunkedBodyScan::Incomplete => {}
+                    ChunkedBodyScan::Complete => break,
+                },
             }
-            if buffer.len() >= end + 4 + content_length {
-                break;
-            }
-        }
-        if buffer.len() > 32 * 1024 * 1024 {
-            anyhow::bail!("HTTP 请求过大");
         }
     }
 
-    Ok(buffer)
-}
-
-fn transfer_encoding_chunked(headers: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(headers);
-    text.lines().any(|line| {
-        line.split_once(':').is_some_and(|(name, value)| {
-            name.trim().eq_ignore_ascii_case("transfer-encoding")
-                && value
-                    .split(',')
-                    .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
-        })
-    })
-}
-
-fn decode_chunked_body(encoded: &[u8]) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut decoded = Vec::new();
-    let mut position = 0_usize;
-    loop {
-        let Some(line_offset) = encoded[position..]
-            .windows(2)
-            .position(|window| window == b"\r\n")
-        else {
-            return Ok(None);
-        };
-        let line_end = position + line_offset;
-        let size_text = std::str::from_utf8(&encoded[position..line_end])?;
-        let size =
-            usize::from_str_radix(size_text.split(';').next().unwrap_or_default().trim(), 16)
-                .map_err(|_| anyhow::anyhow!("HTTP chunk size 无效"))?;
-        position = line_end + 2;
-        if size == 0 {
-            if encoded[position..]
-                .windows(4)
-                .any(|window| window == b"\r\n\r\n")
-                || encoded.get(position..position + 2) == Some(b"\r\n")
-            {
-                return Ok(Some(decoded));
+    let header_end =
+        header_end.ok_or_else(|| HttpRequestReadError::bad_request("HTTP 请求头不完整"))?;
+    let headers = buffer[..header_end].to_vec();
+    let encoded_body = &buffer[header_end + 4..];
+    let body = match framing {
+        HttpBodyFraming::Empty => Vec::new(),
+        HttpBodyFraming::ContentLength(content_length) => {
+            content_length_body(encoded_body, content_length)?
+        }
+        HttpBodyFraming::Chunked => match decode_chunked_body(encoded_body)? {
+            ChunkedBody::Complete(body) => body,
+            ChunkedBody::Incomplete => {
+                return Err(HttpRequestReadError::bad_request(
+                    "chunked HTTP 请求体不完整",
+                ));
             }
-            return Ok(None);
-        }
-        let end = position
-            .checked_add(size)
-            .ok_or_else(|| anyhow::anyhow!("HTTP chunk 过大"))?;
-        if end + 2 > encoded.len() {
-            return Ok(None);
-        }
-        if &encoded[end..end + 2] != b"\r\n" {
-            anyhow::bail!("HTTP chunk 缺少结束 CRLF");
-        }
-        decoded.extend_from_slice(&encoded[position..end]);
-        if decoded.len() > 32 * 1024 * 1024 {
-            anyhow::bail!("HTTP 请求过大");
-        }
-        position = end + 2;
-    }
+        },
+    };
+    Ok(HttpRequest { headers, body })
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-fn content_length_from_headers(headers: &[u8]) -> Option<usize> {
+fn http_body_framing(headers: &[u8]) -> Result<HttpBodyFraming, HttpRequestReadError> {
     let text = String::from_utf8_lossy(headers);
-    text.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
+    let mut content_length = None;
+    let mut transfer_encoding: Option<String> = None;
+    for line in text.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
         if name.trim().eq_ignore_ascii_case("content-length") {
-            value.trim().parse().ok()
-        } else {
-            None
+            let parsed = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| HttpRequestReadError::bad_request("Content-Length 无效"))?;
+            if content_length
+                .replace(parsed)
+                .is_some_and(|existing| existing != parsed)
+            {
+                return Err(HttpRequestReadError::bad_request(
+                    "存在冲突的 Content-Length 请求头",
+                ));
+            }
+        } else if name.trim().eq_ignore_ascii_case("transfer-encoding") {
+            let value = value.trim().to_ascii_lowercase();
+            if let Some(existing) = transfer_encoding.as_mut() {
+                existing.push(',');
+                existing.push_str(&value);
+            } else {
+                transfer_encoding = Some(value);
+            }
         }
-    })
+    }
+    if transfer_encoding.is_some() && content_length.is_some() {
+        return Err(HttpRequestReadError::bad_request(
+            "Transfer-Encoding 与 Content-Length 不能同时使用",
+        ));
+    }
+    match transfer_encoding.as_deref() {
+        Some("chunked") => Ok(HttpBodyFraming::Chunked),
+        Some(_) => Err(HttpRequestReadError::bad_request(
+            "仅支持 Transfer-Encoding: chunked",
+        )),
+        None => Ok(content_length
+            .map(HttpBodyFraming::ContentLength)
+            .unwrap_or(HttpBodyFraming::Empty)),
+    }
 }
 
-fn header_value_from_request(request: &str, header_name: &str) -> Option<String> {
-    request
-        .split_once("\r\n\r\n")
-        .map(|(headers, _)| headers)
-        .unwrap_or(request)
+fn content_length_body(
+    encoded: &[u8],
+    content_length: usize,
+) -> Result<Vec<u8>, HttpRequestReadError> {
+    if content_length > MAX_HTTP_BODY_BYTES {
+        return Err(HttpRequestReadError::payload_too_large());
+    }
+    if encoded.len() < content_length {
+        return Err(HttpRequestReadError::bad_request("HTTP 请求体不完整"));
+    }
+    Ok(encoded[..content_length].to_vec())
+}
+
+fn decode_chunked_body(encoded: &[u8]) -> Result<ChunkedBody, HttpRequestReadError> {
+    let mut decoded = Vec::new();
+    let mut position = 0;
+    loop {
+        let Some(line_end_offset) = encoded[position..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+        else {
+            if encoded.len().saturating_sub(position) > MAX_HTTP_HEADER_BYTES {
+                return Err(HttpRequestReadError::bad_request("chunk size 行过大"));
+            }
+            return Ok(ChunkedBody::Incomplete);
+        };
+        if line_end_offset > MAX_HTTP_HEADER_BYTES {
+            return Err(HttpRequestReadError::bad_request("chunk size 行过大"));
+        }
+        let line_end = position + line_end_offset;
+        let size_text = std::str::from_utf8(&encoded[position..line_end])
+            .map_err(|_| HttpRequestReadError::bad_request("chunk size 不是有效 ASCII"))?;
+        let size_token = size_text.split(';').next().unwrap_or_default().trim();
+        let chunk_size = usize::from_str_radix(size_token, 16)
+            .map_err(|_| HttpRequestReadError::bad_request("chunk size 无效"))?;
+        position = line_end + 2;
+        if chunk_size == 0 {
+            loop {
+                let Some(trailer_end_offset) = encoded[position..]
+                    .windows(2)
+                    .position(|window| window == b"\r\n")
+                else {
+                    if encoded.len().saturating_sub(line_end + 2) > MAX_HTTP_HEADER_BYTES {
+                        return Err(HttpRequestReadError::bad_request("chunk trailer 过大"));
+                    }
+                    return Ok(ChunkedBody::Incomplete);
+                };
+                if position + trailer_end_offset - (line_end + 2) > MAX_HTTP_HEADER_BYTES {
+                    return Err(HttpRequestReadError::bad_request("chunk trailer 过大"));
+                }
+                if trailer_end_offset == 0 {
+                    return Ok(ChunkedBody::Complete(decoded));
+                }
+                position += trailer_end_offset + 2;
+            }
+        }
+        if decoded.len().saturating_add(chunk_size) > MAX_HTTP_BODY_BYTES {
+            return Err(HttpRequestReadError::payload_too_large());
+        }
+        let chunk_end = position
+            .checked_add(chunk_size)
+            .ok_or_else(HttpRequestReadError::payload_too_large)?;
+        if encoded.len() < chunk_end + 2 {
+            return Ok(ChunkedBody::Incomplete);
+        }
+        if &encoded[chunk_end..chunk_end + 2] != b"\r\n" {
+            return Err(HttpRequestReadError::bad_request("chunk 数据后缺少 CRLF"));
+        }
+        decoded.extend_from_slice(&encoded[position..chunk_end]);
+        position = chunk_end + 2;
+    }
+}
+
+#[cfg(test)]
+fn scan_chunked_body(encoded: &[u8]) -> Result<ChunkedBodyScan, HttpRequestReadError> {
+    ChunkedScanState::default().advance(encoded)
+}
+
+fn header_value_from_headers(headers: &str, header_name: &str) -> Option<String> {
+    headers
         .lines()
         .skip(1)
         .find_map(|line| {
