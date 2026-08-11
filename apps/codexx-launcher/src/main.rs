@@ -386,6 +386,7 @@ impl LaunchHooks for LauncherHooks {
         let task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             let mut injected_global_dictation_targets = HashSet::new();
+            let mut bridge_health_failures = 0;
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
@@ -414,7 +415,8 @@ impl LaunchHooks for LauncherHooks {
                                 );
                             }
                         }
-                        if launcher_bridge_health_ok(debug_port).await.unwrap_or(false) {
+                        let bridge_healthy = launcher_bridge_health_ok(debug_port).await.unwrap_or(false);
+                        if !should_reinject_bridge(&mut bridge_health_failures, bridge_healthy) {
                             continue;
                         }
                         let Some(app_dir) = app_dir else {
@@ -436,6 +438,7 @@ impl LaunchHooks for LauncherHooks {
                             hooks.runtime.clone(),
                         ).await {
                             Ok(()) => {
+                                bridge_health_failures = 0;
                                 let _ = codexx_core::diagnostic_log::append_diagnostic_log(
                                     "bridge.reinject_ok",
                                     json!({ "debug_port": debug_port, "helper_port": helper_port }),
@@ -850,6 +853,15 @@ async fn try_inject_with_context(
     Ok(())
 }
 
+fn should_reinject_bridge(consecutive_failures: &mut u8, healthy: bool) -> bool {
+    if healthy {
+        *consecutive_failures = 0;
+        return false;
+    }
+    *consecutive_failures = consecutive_failures.saturating_add(1);
+    *consecutive_failures >= 3
+}
+
 fn pending_global_dictation_targets(
     targets: &[codexx_core::cdp::CdpTarget],
     injected_target_ids: &HashSet<String>,
@@ -1115,6 +1127,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["dictation"]
         );
+    }
+
+    #[test]
+    fn watchdog_requires_three_consecutive_health_failures_before_reinjecting() {
+        let mut failures = 0;
+
+        assert!(!should_reinject_bridge(&mut failures, false));
+        assert!(!should_reinject_bridge(&mut failures, false));
+        assert!(should_reinject_bridge(&mut failures, false));
+        assert!(!should_reinject_bridge(&mut failures, true));
+        assert_eq!(failures, 0);
     }
 }
 

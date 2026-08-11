@@ -3334,7 +3334,7 @@
       return;
     }
     if (window.__codexSessionDeleteBridge) {
-      window.__codexSessionDeleteBridge("/diagnostics/log", payload).catch(() => {});
+      return window.__codexSessionDeleteBridge("/diagnostics/log", payload).catch(() => {});
     }
     const body = JSON.stringify(payload);
     try {
@@ -4554,6 +4554,9 @@
 
   function installAppServerModelRequestPatch() {
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    if (window.__codexPlusAppServerModelRequestPatchInFlight) return;
+    if (Date.now() < Number(window.__codexPlusAppServerModelRequestPatchRetryAt || 0)) return;
+    window.__codexPlusAppServerModelRequestPatchInFlight = true;
     const patch = async () => {
       try {
         const module = await loadCodexAppModule("app-server-manager-signals-");
@@ -4575,16 +4578,20 @@
             patchedCount,
           });
         } else {
+          window.__codexPlusAppServerModelRequestPatchRetryAt = Date.now() + 30000;
           sendCodexPlusDiagnostic("model_app_server_request_patch_not_found", {
             exportCount: Object.keys(module || {}).length,
             candidateCount: candidates.length,
           });
         }
       } catch (error) {
+        window.__codexPlusAppServerModelRequestPatchRetryAt = Date.now() + 30000;
         sendCodexPlusDiagnostic("model_app_server_request_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         });
+      } finally {
+        window.__codexPlusAppServerModelRequestPatchInFlight = false;
       }
     };
     void patch();

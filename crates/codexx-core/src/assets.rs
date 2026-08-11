@@ -298,4 +298,13 @@ mod tests {
         assert!(!script.contains("codex-plus-menu"));
         assert!(!script.contains("CodexGO"));
     }
+
+    #[test]
+    fn renderer_injection_throttles_failed_model_patch_and_avoids_duplicate_diagnostics() {
+        let script = injection_script(58321);
+
+        assert!(script.contains("__codexPlusAppServerModelRequestPatchRetryAt"));
+        assert!(script.contains("__codexPlusAppServerModelRequestPatchInFlight"));
+        assert!(script.contains("return window.__codexSessionDeleteBridge"));
+    }
 }
