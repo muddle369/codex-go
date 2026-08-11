@@ -691,7 +691,7 @@ async fn core_runtime_manager_route_attempts_to_open_manager_binary() {
 }
 
 #[tokio::test]
-async fn bridge_backend_status_writes_diagnostic_log() {
+async fn bridge_backend_status_logs_result_without_noisy_request_events() {
     let temp = tempfile::tempdir().unwrap();
     let log_path = temp.path().join("codexx.log");
     codexx_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
@@ -704,9 +704,9 @@ async fn bridge_backend_status_writes_diagnostic_log() {
 
     assert_eq!(result["status"], "ok");
     let contents = std::fs::read_to_string(&log_path).unwrap();
-    assert!(contents.contains("bridge.request"));
+    assert!(!contents.contains("bridge.request"));
+    assert!(!contents.contains("bridge.response"));
     assert!(contents.contains("bridge.backend_status_ok"));
-    assert!(contents.contains("/backend/status"));
     codexx_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
 }
 
