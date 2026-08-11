@@ -1866,7 +1866,7 @@ pub struct QuickSwitchProfileRequest {
 const QUICK_PROFILE_ID: &str = "codexx-quick";
 const QUICK_PROFILE_NAME: &str = "SCD_Ai";
 const QUICK_CONFIG_BASE_URL: &str = codexx_core::brand::OFFICIAL_RELAY_BASE_URL;
-const QUICK_AUDIO_TRANSCRIPTION_MODEL: &str = "gpt-4o-mini-transcribe";
+const QUICK_AUDIO_TRANSCRIPTION_MODEL: &str = "gpt-4o-transcribe";
 
 #[tauri::command]
 pub fn switch_relay_profile(
@@ -3879,6 +3879,7 @@ model_reasoning_effort = "high"
     fn quick_scd_profile_sets_default_audio_transcription_model() {
         let profile = quick_relay_profile("sk-test", RelayMode::PureApi, false);
 
+        assert_eq!(QUICK_AUDIO_TRANSCRIPTION_MODEL, "gpt-4o-transcribe");
         assert_eq!(
             profile.audio_transcription_model,
             QUICK_AUDIO_TRANSCRIPTION_MODEL

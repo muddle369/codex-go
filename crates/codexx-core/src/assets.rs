@@ -5,6 +5,8 @@ use std::path::Path;
 use crate::settings::BackendSettings;
 
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
+const AUDIO_TRANSCRIPTION_SCRIPT: &str =
+    include_str!("../../../assets/inject/audio-transcription-inject.js");
 #[cfg(windows)]
 const DREAM_SKIN_CSS: &str =
     include_str!("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css");
@@ -54,6 +56,14 @@ pub fn sponsor_image_data_uris() -> Value {
 
 pub fn injection_script(helper_port: u16) -> String {
     injection_script_with_settings(helper_port, &BackendSettings::default())
+}
+
+pub fn audio_transcription_injection_script(helper_port: u16) -> String {
+    let endpoint = format!("http://127.0.0.1:{helper_port}/v1/audio/transcriptions");
+    AUDIO_TRANSCRIPTION_SCRIPT.replace(
+        "__CODEXGO_AUDIO_TRANSCRIPTION_ENDPOINT__",
+        &serde_json::to_string(&endpoint).expect("audio transcription endpoint should serialize"),
+    )
 }
 
 pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettings) -> String {
@@ -273,5 +283,19 @@ mod tests {
             assert!(renderer.contains("__DREAM_SKIN_VERSION_JSON__"));
             assert!(!renderer.contains("version: \"1.2.0\""));
         }
+    }
+
+    #[test]
+    fn audio_transcription_injection_only_redirects_to_local_helper() {
+        let script = audio_transcription_injection_script(58321);
+
+        assert!(script.contains("/transcribe"));
+        assert!(script.contains("http://127.0.0.1:58321/v1/audio/transcriptions"));
+        assert!(script.contains("x-codex-base64"));
+        assert!(script.contains("x-codexgo-audio-language"));
+        assert!(script.contains("x-openai-attach-auth"));
+        assert!(!script.contains("codex-dream-skin"));
+        assert!(!script.contains("codex-plus-menu"));
+        assert!(!script.contains("CodexGO"));
     }
 }

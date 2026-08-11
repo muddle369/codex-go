@@ -1,12 +1,15 @@
+use codexx_core::audio_transcription::transcode_webm_opus_to_wav;
 use codexx_core::protocol_proxy::{
     ChatSseToResponsesConverter, audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, is_audio_transcriptions_proxy_path,
-    is_chat_completions_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
-    is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
-    open_chat_completions_proxy_request, open_models_proxy_request, open_responses_proxy_request,
-    open_responses_proxy_request_with_settings, override_audio_transcription_model,
-    responses_compact_url, responses_error_from_upstream, responses_to_chat_completions,
+    chat_sse_to_responses_sse_with_request, is_audio_format_rejection,
+    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_models_proxy_path,
+    is_responses_compact_proxy_path, is_responses_proxy_path, models_url,
+    open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
+    open_models_proxy_request, open_responses_proxy_request,
+    open_responses_proxy_request_with_settings, override_audio_transcription_language,
+    override_audio_transcription_model, prepare_audio_transcription_request, responses_compact_url,
+    responses_error_from_upstream, responses_to_chat_completions,
     send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
     upstream_stream_header_timeout,
 };
@@ -162,6 +165,118 @@ fn audio_transcription_model_override_replaces_existing_model() {
     assert!(converted.contains("\r\nwhisper-1\r\n"));
     assert!(!converted.contains("gpt-4o-mini-transcribe"));
     assert!(converted.contains("RIFF\0DATA"));
+}
+
+#[test]
+fn audio_transcription_language_adds_missing_field_and_normalizes_locale() {
+    let boundary = "codex-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\0DATA\r\n--{boundary}--\r\n"
+    );
+
+    let converted = override_audio_transcription_language(
+        body.as_bytes(),
+        &format!("multipart/form-data; boundary={boundary}"),
+        "zh-CN",
+    )
+    .unwrap();
+    let converted = String::from_utf8_lossy(&converted);
+
+    assert!(converted.contains("name=\"language\"\r\n\r\nzh\r\n"));
+    assert!(converted.contains("RIFF\0DATA"));
+}
+
+#[test]
+fn audio_transcription_language_preserves_existing_field() {
+    let boundary = "codex-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nja\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\0DATA\r\n--{boundary}--\r\n"
+    );
+
+    let converted = override_audio_transcription_language(
+        body.as_bytes(),
+        &format!("multipart/form-data; boundary={boundary}"),
+        "zh-CN",
+    )
+    .unwrap();
+
+    assert_eq!(converted, body.as_bytes());
+}
+
+#[test]
+fn browser_webm_opus_transcodes_to_mono_16khz_pcm_wav() {
+    let webm = include_bytes!("browser-opus.webm");
+
+    let wav = transcode_webm_opus_to_wav(webm).unwrap();
+
+    assert_eq!(&wav[0..4], b"RIFF");
+    assert_eq!(&wav[8..12], b"WAVE");
+    assert_eq!(u16::from_le_bytes([wav[20], wav[21]]), 1);
+    assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 1);
+    assert_eq!(
+        u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]),
+        16_000
+    );
+    assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16);
+    assert!(wav.len() > 44);
+}
+
+#[test]
+fn audio_transcription_request_replaces_webm_file_with_wav() {
+    let boundary = "codex-browser-boundary";
+    let webm = include_bytes!("browser-opus.webm");
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-4o-mini-transcribe\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.webm\"\r\nContent-Type: audio/webm;codecs=opus\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(webm);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let prepared = prepare_audio_transcription_request(
+        &body,
+        &format!("multipart/form-data; boundary={boundary}"),
+        "gpt-4o-transcribe",
+        true,
+    )
+    .unwrap();
+
+    assert!(prepared.converted_to_wav);
+    assert!(
+        prepared
+            .body
+            .windows(b"filename=\"recording.wav\"".len())
+            .any(|window| { window == b"filename=\"recording.wav\"" })
+    );
+    assert!(
+        prepared
+            .body
+            .windows(b"Content-Type: audio/wav".len())
+            .any(|window| { window == b"Content-Type: audio/wav" })
+    );
+    assert!(
+        prepared
+            .body
+            .windows(b"\r\n\r\nRIFF".len())
+            .any(|window| { window == b"\r\n\r\nRIFF" })
+    );
+    assert!(
+        prepared
+            .body
+            .windows(b"\r\ngpt-4o-transcribe\r\n".len())
+            .any(|window| { window == b"\r\ngpt-4o-transcribe\r\n" })
+    );
+}
+
+#[test]
+fn audio_format_rejection_recognizes_007ai_webm_parser_error() {
+    assert!(is_audio_format_rejection(
+        500,
+        br#"{"code":"count_token_failed","message":"webm duration parsing requires full EBML parser"}"#,
+    ));
+    assert!(!is_audio_format_rejection(
+        429,
+        br#"{"code":"DeploymentNotFound","message":"upstream saturated"}"#,
+    ));
 }
 
 #[test]
@@ -1644,6 +1759,210 @@ async fn audio_transcriptions_proxy_uses_configured_model_override() {
     assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
     assert!(request.contains("\r\nwhisper-1\r\n"));
     assert!(!request.contains("gpt-4o-mini-transcribe"));
+}
+
+#[tokio::test]
+async fn quick_scd_audio_transcriptions_proxy_uploads_wav() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or_default();
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        let response_body = r#"{"text":"ok"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        request
+    });
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "codexx-quick",
+            "name": "SCD_Ai",
+            "baseUrl": format!("http://{address}/v1"),
+            "upstreamBaseUrl": format!("http://{address}/v1"),
+            "apiKey": "sk-test",
+            "protocol": "responses",
+            "relayMode": "pureApi",
+            "audioTranscriptionModel": "gpt-4o-transcribe"
+        }],
+        "activeRelayId": "codexx-quick"
+    });
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let boundary = "codex-browser-boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-4o-mini-transcribe\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.webm\"\r\nContent-Type: audio/webm;codecs=opus\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(include_bytes!("browser-opus.webm"));
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let upstream = open_audio_transcriptions_proxy_request(
+        &body,
+        &format!("multipart/form-data; boundary={boundary}"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    let request = server.await.unwrap();
+    assert!(
+        request
+            .windows(b"Content-Type: audio/wav".len())
+            .any(|window| { window == b"Content-Type: audio/wav" })
+    );
+    assert!(
+        request
+            .windows(b"\r\n\r\nRIFF".len())
+            .any(|window| { window == b"\r\n\r\nRIFF" })
+    );
+}
+
+#[tokio::test]
+async fn unknown_audio_provider_retries_webm_as_wav_after_format_error() {
+    let _lock = settings_path_test_lock().lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut requests = Vec::new();
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                    })
+                    .unwrap_or_default();
+                if request.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+            requests.push(request);
+            let response_body = if attempt == 0 {
+                r#"{"code":"count_token_failed","message":"webm duration parsing requires full EBML parser"}"#
+            } else {
+                r#"{"text":"ok"}"#
+            };
+            let status = if attempt == 0 {
+                "500 Internal Server Error"
+            } else {
+                "200 OK"
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+        requests
+    });
+    let settings = json!({
+        "relayProfiles": [{
+            "id": "auto-audio-provider",
+            "name": "Auto Audio",
+            "baseUrl": format!("http://{address}/v1"),
+            "upstreamBaseUrl": format!("http://{address}/v1"),
+            "apiKey": "sk-test",
+            "protocol": "responses",
+            "relayMode": "pureApi",
+            "audioTranscriptionModel": "custom-transcribe"
+        }],
+        "activeRelayId": "auto-audio-provider"
+    });
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let boundary = "codex-auto-boundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"recording.webm\"\r\nContent-Type: audio/webm;codecs=opus\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(include_bytes!("browser-opus.webm"));
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let upstream = open_audio_transcriptions_proxy_request(
+        &body,
+        &format!("multipart/form-data; boundary={boundary}"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(upstream.status_code, 200);
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0]
+            .windows(b"Content-Type: audio/webm".len())
+            .any(|window| { window == b"Content-Type: audio/webm" })
+    );
+    assert!(
+        requests[1]
+            .windows(b"Content-Type: audio/wav".len())
+            .any(|window| { window == b"Content-Type: audio/wav" })
+    );
 }
 
 #[tokio::test]

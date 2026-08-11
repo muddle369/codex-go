@@ -8,6 +8,7 @@ use codexx_core::models::{DeleteResult, ExportResult, SessionRef};
 use codexx_core::routes::{BridgeContext, BridgeDataService, BridgeRuntimeService};
 use codexx_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,13 @@ struct LauncherHooks {
     core: Arc<DefaultLaunchHooks>,
     data: Arc<LauncherDataService>,
     runtime: Arc<LauncherRuntimeService>,
+    app_dir: Arc<Mutex<Option<PathBuf>>>,
+    bridge_watchdog: Arc<tokio::sync::Mutex<Option<LauncherBridgeWatchdogRuntime>>>,
+}
+
+struct LauncherBridgeWatchdogRuntime {
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl Default for LauncherHooks {
@@ -29,6 +37,8 @@ impl Default for LauncherHooks {
                 9329,
                 default_user_script_manager(),
             )),
+            app_dir: Arc::new(Mutex::new(None)),
+            bridge_watchdog: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 }
@@ -349,6 +359,7 @@ impl LaunchHooks for LauncherHooks {
         app_dir: &Path,
     ) -> anyhow::Result<Option<BridgeContext>> {
         self.runtime.set_debug_port(debug_port);
+        *self.app_dir.lock().unwrap() = Some(app_dir.to_path_buf());
         Ok(Some(BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
             self.data.clone(),
@@ -367,6 +378,94 @@ impl LaunchHooks for LauncherHooks {
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         self.core.inject(debug_port, helper_port).await
+    }
+
+    async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let hooks = self.clone();
+        let task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut injected_global_dictation_targets = HashSet::new();
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    _ = interval.tick() => {
+                        let app_dir = hooks.app_dir.lock().unwrap().clone();
+                        if let Some(app_dir) = app_dir.clone() {
+                            let ctx = BridgeContext::core_with_data_and_app_dir(
+                                hooks.runtime.clone(),
+                                hooks.data.clone(),
+                                app_dir,
+                            );
+                            if let Err(error) = inject_pending_global_dictation_targets(
+                                debug_port,
+                                helper_port,
+                                ctx,
+                                hooks.runtime.clone(),
+                                &mut injected_global_dictation_targets,
+                            ).await {
+                                let _ = codexx_core::diagnostic_log::append_diagnostic_log(
+                                    "bridge.audio_target_scan_failed",
+                                    json!({
+                                        "debug_port": debug_port,
+                                        "helper_port": helper_port,
+                                        "message": error.to_string()
+                                    }),
+                                );
+                            }
+                        }
+                        if launcher_bridge_health_ok(debug_port).await.unwrap_or(false) {
+                            continue;
+                        }
+                        let Some(app_dir) = app_dir else {
+                            continue;
+                        };
+                        let ctx = BridgeContext::core_with_data_and_app_dir(
+                            hooks.runtime.clone(),
+                            hooks.data.clone(),
+                            app_dir,
+                        );
+                        let _ = codexx_core::diagnostic_log::append_diagnostic_log(
+                            "bridge.reinject_start",
+                            json!({ "debug_port": debug_port, "helper_port": helper_port }),
+                        );
+                        match inject_with_context(
+                            debug_port,
+                            helper_port,
+                            ctx,
+                            hooks.runtime.clone(),
+                        ).await {
+                            Ok(()) => {
+                                let _ = codexx_core::diagnostic_log::append_diagnostic_log(
+                                    "bridge.reinject_ok",
+                                    json!({ "debug_port": debug_port, "helper_port": helper_port }),
+                                );
+                            }
+                            Err(error) => {
+                                let _ = codexx_core::diagnostic_log::append_diagnostic_log(
+                                    "bridge.reinject_failed",
+                                    json!({
+                                        "debug_port": debug_port,
+                                        "helper_port": helper_port,
+                                        "message": error.to_string()
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if let Some(runtime) = self
+            .bridge_watchdog
+            .lock()
+            .await
+            .replace(LauncherBridgeWatchdogRuntime { shutdown, task })
+        {
+            let _ = runtime.shutdown.send(());
+            let _ = runtime.task.await;
+        }
+        Ok(())
     }
 
     async fn start_computer_use_guard_watchdog(
@@ -686,37 +785,163 @@ async fn try_inject_with_context(
     runtime: Arc<LauncherRuntimeService>,
 ) -> anyhow::Result<()> {
     let targets = codexx_core::cdp::list_targets(debug_port).await?;
-    let target = codexx_core::cdp::pick_injectable_codex_page_target(&targets)?;
-    let websocket_url = target
-        .web_socket_debugger_url
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    runtime.set_websocket_url(websocket_url);
+    let primary_target = codexx_core::cdp::pick_injectable_codex_page_target(&targets)?;
+    let mut injection_targets = vec![primary_target.clone()];
+    for target in targets.iter().filter(|target| {
+        codexx_core::cdp::is_injectable_page_target(target)
+            && codexx_core::cdp::is_global_dictation_page_target(target)
+    }) {
+        if target.id != primary_target.id {
+            injection_targets.push(target.clone());
+        }
+    }
     let settings = codexx_core::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
-    let script = codexx_core::assets::injection_script_with_settings(helper_port, &settings);
     let user_bundle = runtime
         .user_scripts
         .build_enabled_bundle()
         .unwrap_or_default();
-    let new_document_scripts = if user_bundle.is_empty() {
-        vec![script]
-    } else {
-        vec![script, user_bundle]
-    };
-    codexx_core::bridge::install_bridge(
+    for target in injection_targets {
+        let websocket_url = target
+            .web_socket_debugger_url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+        let is_primary = target.id == primary_target.id;
+        if is_primary {
+            runtime.set_websocket_url(websocket_url);
+        }
+        let is_global_dictation = codexx_core::cdp::is_global_dictation_page_target(&target);
+        let script = if is_global_dictation {
+            codexx_core::assets::audio_transcription_injection_script(helper_port)
+        } else {
+            codexx_core::assets::injection_script_with_settings(helper_port, &settings)
+        };
+        let scripts = if is_primary && !user_bundle.is_empty() {
+            vec![script, user_bundle.clone()]
+        } else {
+            vec![script]
+        };
+        codexx_core::bridge::install_bridge(
+            websocket_url,
+            codexx_core::bridge::BRIDGE_BINDING_NAME,
+            Arc::new({
+                let ctx = ctx.clone();
+                move |path, payload| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        Ok(codexx_core::routes::handle_bridge_request(ctx, &path, payload).await)
+                    })
+                }
+            }),
+            &scripts,
+        )
+        .await?;
+        let _ = codexx_core::diagnostic_log::append_diagnostic_log(
+            "bridge.page_injection_ok",
+            json!({
+                "target_id": target.id,
+                "target_url": target.url,
+                "is_primary": is_primary,
+                "injection_kind": if is_global_dictation { "audio" } else { "full" }
+            }),
+        );
+    }
+    Ok(())
+}
+
+fn pending_global_dictation_targets(
+    targets: &[codexx_core::cdp::CdpTarget],
+    injected_target_ids: &HashSet<String>,
+) -> Vec<codexx_core::cdp::CdpTarget> {
+    targets
+        .iter()
+        .filter(|target| {
+            codexx_core::cdp::is_injectable_page_target(target)
+                && codexx_core::cdp::is_global_dictation_page_target(target)
+                && !injected_target_ids.contains(&target.id)
+        })
+        .cloned()
+        .collect()
+}
+
+async fn inject_pending_global_dictation_targets(
+    debug_port: u16,
+    helper_port: u16,
+    ctx: BridgeContext,
+    runtime: Arc<LauncherRuntimeService>,
+    injected_target_ids: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    let targets = codexx_core::cdp::list_targets(debug_port).await?;
+    let active_target_ids = targets
+        .iter()
+        .filter(|target| codexx_core::cdp::is_global_dictation_page_target(target))
+        .map(|target| target.id.clone())
+        .collect::<HashSet<_>>();
+    injected_target_ids.retain(|target_id| active_target_ids.contains(target_id));
+
+    for target in pending_global_dictation_targets(&targets, injected_target_ids) {
+        let websocket_url = target
+            .web_socket_debugger_url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("global dictation target has no websocket URL"))?;
+        let script = codexx_core::assets::audio_transcription_injection_script(helper_port);
+        codexx_core::bridge::install_bridge(
+            websocket_url,
+            codexx_core::bridge::BRIDGE_BINDING_NAME,
+            Arc::new({
+                let ctx = ctx.clone();
+                move |path, payload| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        Ok(codexx_core::routes::handle_bridge_request(ctx, &path, payload).await)
+                    })
+                }
+            }),
+            &[script],
+        )
+        .await?;
+        injected_target_ids.insert(target.id.clone());
+        let _ = codexx_core::diagnostic_log::append_diagnostic_log(
+            "bridge.audio_target_injection_ok",
+            json!({
+                "target_id": target.id,
+                "target_url": target.url,
+                "injection_kind": "audio"
+            }),
+        );
+    }
+
+    runtime.set_debug_port(debug_port);
+    Ok(())
+}
+
+async fn launcher_bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+    let targets = codexx_core::cdp::list_targets(debug_port).await?;
+    let primary = codexx_core::cdp::pick_injectable_codex_page_target(&targets)?;
+    let websocket_url = primary
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+    let result = codexx_core::bridge::evaluate_script_with_await_promise(
         websocket_url,
-        codexx_core::bridge::BRIDGE_BINDING_NAME,
-        Arc::new(move |path, payload| {
-            let ctx = ctx.clone();
-            Box::pin(async move {
-                Ok(codexx_core::routes::handle_bridge_request(ctx, &path, payload).await)
-            })
-        }),
-        &new_document_scripts,
+        codexx_core::bridge::bridge_health_check_script(),
+        true,
     )
-    .await
+    .await?;
+    if !runtime_evaluate_result_is_true(&result) {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn runtime_evaluate_result_is_true(result: &Value) -> bool {
+    result
+        .get("result")
+        .and_then(|result| result.get("result"))
+        .and_then(|result| result.get("value"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn default_codex_db_path() -> PathBuf {
@@ -854,6 +1079,41 @@ mod tests {
             path.file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.contains(codexx_core::install::MANAGER_BINARY))
+        );
+    }
+
+    #[test]
+    fn watchdog_discovers_global_dictation_target_created_after_initial_injection() {
+        let targets = vec![
+            codexx_core::cdp::CdpTarget {
+                id: "primary".to_string(),
+                target_type: "page".to_string(),
+                title: "Codex".to_string(),
+                url: "app://-/index.html".to_string(),
+                web_socket_debugger_url: Some(
+                    "ws://127.0.0.1:9329/devtools/page/primary".to_string(),
+                ),
+            },
+            codexx_core::cdp::CdpTarget {
+                id: "dictation".to_string(),
+                target_type: "page".to_string(),
+                title: "Codex".to_string(),
+                url: "app://-/index.html?initialRoute=%2Fglobal-dictation".to_string(),
+                web_socket_debugger_url: Some(
+                    "ws://127.0.0.1:9329/devtools/page/dictation".to_string(),
+                ),
+            },
+        ];
+        let injected = std::collections::HashSet::new();
+
+        let pending = pending_global_dictation_targets(&targets, &injected);
+
+        assert_eq!(
+            pending
+                .iter()
+                .map(|target| target.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dictation"]
         );
     }
 }

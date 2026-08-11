@@ -504,16 +504,12 @@ fn injection_script_exposes_fast_service_tier_control() {
 }
 
 #[test]
-fn injection_script_converts_webm_dictation_to_wav_before_upload() {
+fn injection_script_leaves_audio_transcoding_to_the_protocol_proxy() {
     let script = assets::injection_script(58321);
 
-    assert!(script.contains("installAudioTranscriptionRequestPatch"));
-    assert!(script.contains("codexAudioTranscriptionBodyToWav"));
-    assert!(script.contains("OfflineAudioContext"));
-    assert!(script.contains("audio/webm"));
-    assert!(script.contains("audio/wav"));
-    assert!(script.contains("/transcribe"));
-    assert!(script.contains("audio_transcription_webm_converted"));
+    assert!(!script.contains("installAudioTranscriptionRequestPatch"));
+    assert!(!script.contains("codexAudioTranscriptionBodyToWav"));
+    assert!(!script.contains("OfflineAudioContext"));
 }
 
 #[test]

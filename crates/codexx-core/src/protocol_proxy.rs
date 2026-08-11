@@ -2,13 +2,15 @@
 //!
 //! Codex Chat 与 Responses 协议之间的转换实现。
 
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::Context;
 use serde_json::{Value, json};
 
+use crate::audio_transcription::transcode_webm_opus_to_wav;
+use crate::brand::{OFFICIAL_RELAY_URL, QUICK_PROVIDER_NAME};
 use crate::relay_rotation::{RotationContext, RotationEvent};
 use crate::settings::{RelayProtocol, SettingsStore};
 
@@ -34,6 +36,16 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
     "user",
 ];
 const ERROR_BODY_PREVIEW_LIMIT: usize = 1024;
+const QUICK_AUDIO_RELAY_ID: &str = "codexx-quick";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioFormatCapability {
+    SupportsWebm,
+    RequiresWav,
+}
+
+static AUDIO_FORMAT_CAPABILITIES: OnceLock<Mutex<HashMap<String, AudioFormatCapability>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatReasoningStyle {
@@ -717,6 +729,21 @@ pub async fn open_audio_transcriptions_proxy_request(
     content_type: &str,
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
+    open_audio_transcriptions_proxy_request_with_language(
+        body,
+        content_type,
+        original_user_agent,
+        None,
+    )
+    .await
+}
+
+pub async fn open_audio_transcriptions_proxy_request_with_language(
+    body: &[u8],
+    content_type: &str,
+    original_user_agent: Option<&str>,
+    language: Option<&str>,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
     validate_upstream(&relay)?;
@@ -724,11 +751,21 @@ pub async fn open_audio_transcriptions_proxy_request(
     if content_type.is_empty() {
         anyhow::bail!("Audio transcriptions 请求缺少 Content-Type");
     }
-    let body = override_audio_transcription_model(
+    let capability_key = format!("{}|{}", relay.id, relay.base_url.trim_end_matches('/'));
+    let cached_capability = audio_format_capability(&capability_key);
+    let force_wav =
+        is_scd_audio_relay(&relay) || cached_capability == Some(AudioFormatCapability::RequiresWav);
+    let mut prepared = prepare_audio_transcription_request(
         body,
         content_type,
         relay.audio_transcription_model.trim(),
+        force_wav,
     )?;
+    let language_override = normalize_audio_transcription_language(language.unwrap_or_default());
+    if let Some(language) = language_override.as_deref() {
+        prepared.body =
+            override_audio_transcription_language(&prepared.body, content_type, language)?;
+    }
     let endpoint = audio_transcriptions_url(&relay.base_url);
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "protocol_proxy.audio_transcriptions_request",
@@ -737,21 +774,74 @@ pub async fn open_audio_transcriptions_proxy_request(
             "relayName": relay.name,
             "endpoint": endpoint,
             "wireApi": UpstreamWireApi::AudioTranscriptions,
-            "bodyBytes": body.len(),
-            "modelOverride": if relay.audio_transcription_model.trim().is_empty() { Value::Null } else { json!(relay.audio_transcription_model.trim()) }
+            "bodyBytes": prepared.body.len(),
+            "inputWasWebm": prepared.input_was_webm,
+            "convertedToWav": prepared.converted_to_wav,
+            "cachedFormat": cached_capability.map(|capability| match capability {
+                AudioFormatCapability::SupportsWebm => "webm",
+                AudioFormatCapability::RequiresWav => "wav",
+            }),
+            "modelOverride": if relay.audio_transcription_model.trim().is_empty() { Value::Null } else { json!(relay.audio_transcription_model.trim()) },
+            "languageOverride": language_override
         }),
     );
-    let upstream = send_upstream_request(
-        crate::http_client::proxied_client(&effective_user_agent(
-            &relay.user_agent,
-            original_user_agent,
-        ))?
-        .post(endpoint)
-        .bearer_auth(relay.api_key.trim())
-        .header(reqwest::header::CONTENT_TYPE, content_type)
-        .body(body),
+    let client = crate::http_client::proxied_client(&effective_user_agent(
+        &relay.user_agent,
+        original_user_agent,
+    ))?;
+    let mut upstream = send_audio_transcription_request(
+        &client,
+        &endpoint,
+        relay.api_key.trim(),
+        content_type,
+        prepared.body,
     )
     .await?;
+
+    if prepared.input_was_webm && !prepared.converted_to_wav {
+        if upstream.status().is_success() {
+            set_audio_format_capability(&capability_key, AudioFormatCapability::SupportsWebm);
+        } else {
+            let (response, response_body) = buffer_upstream_response(upstream).await?;
+            upstream = response;
+            if is_audio_format_rejection(upstream.status().as_u16(), &response_body) {
+                let mut retry = prepare_audio_transcription_request(
+                    body,
+                    content_type,
+                    relay.audio_transcription_model.trim(),
+                    true,
+                )?;
+                if let Some(language) = language_override.as_deref() {
+                    retry.body =
+                        override_audio_transcription_language(&retry.body, content_type, language)?;
+                }
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.audio_transcriptions_retry_wav",
+                    json!({
+                        "relayId": relay.id,
+                        "relayName": relay.name,
+                        "endpoint": endpoint,
+                        "statusCode": upstream.status().as_u16(),
+                        "responsePreview": String::from_utf8_lossy(&response_body[..response_body.len().min(ERROR_BODY_PREVIEW_LIMIT)]),
+                    }),
+                );
+                upstream = send_audio_transcription_request(
+                    &client,
+                    &endpoint,
+                    relay.api_key.trim(),
+                    content_type,
+                    retry.body,
+                )
+                .await?;
+                if upstream.status().is_success() {
+                    set_audio_format_capability(
+                        &capability_key,
+                        AudioFormatCapability::RequiresWav,
+                    );
+                }
+            }
+        }
+    }
     let status_code = upstream.status().as_u16();
     let content_type = upstream
         .headers()
@@ -767,6 +857,81 @@ pub async fn open_audio_transcriptions_proxy_request(
         wire_api: UpstreamWireApi::AudioTranscriptions,
         response: upstream,
     })
+}
+
+async fn send_audio_transcription_request(
+    client: &reqwest::Client,
+    endpoint: &str,
+    api_key: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> anyhow::Result<reqwest::Response> {
+    send_upstream_request(
+        client
+            .post(endpoint)
+            .bearer_auth(api_key)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body),
+    )
+    .await
+}
+
+async fn buffer_upstream_response(
+    response: reqwest::Response,
+) -> anyhow::Result<(reqwest::Response, Vec<u8>)> {
+    let status = response.status();
+    let version = response.version();
+    let headers = response.headers().clone();
+    let body = response.bytes().await?.to_vec();
+    let mut builder = http::Response::builder().status(status).version(version);
+    *builder
+        .headers_mut()
+        .ok_or_else(|| anyhow::anyhow!("无法重建上游音频响应头"))? = headers;
+    let response = reqwest::Response::from(builder.body(body.clone())?);
+    Ok((response, body))
+}
+
+pub fn is_audio_format_rejection(status_code: u16, response_body: &[u8]) -> bool {
+    if status_code == 415 {
+        return true;
+    }
+    if !matches!(status_code, 400 | 422 | 500) {
+        return false;
+    }
+    let message = String::from_utf8_lossy(response_body).to_ascii_lowercase();
+    message.contains("count_token_failed")
+        || message.contains("ebml parser")
+        || message.contains("webm duration")
+        || message.contains("unsupported audio")
+        || message.contains("unsupported file")
+        || message.contains("invalid file format")
+}
+
+fn is_scd_audio_relay(relay: &crate::settings::RelayProfile) -> bool {
+    relay.id == QUICK_AUDIO_RELAY_ID
+        || relay.name.eq_ignore_ascii_case(QUICK_PROVIDER_NAME)
+        || relay
+            .base_url
+            .trim()
+            .trim_end_matches('/')
+            .starts_with(OFFICIAL_RELAY_URL)
+}
+
+fn audio_format_capability(key: &str) -> Option<AudioFormatCapability> {
+    AUDIO_FORMAT_CAPABILITIES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key)
+        .copied()
+}
+
+fn set_audio_format_capability(key: &str, capability: AudioFormatCapability) {
+    AUDIO_FORMAT_CAPABILITIES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key.to_string(), capability);
 }
 
 pub fn override_audio_transcription_model(
@@ -808,6 +973,181 @@ pub fn override_audio_transcription_model(
     Ok(next)
 }
 
+pub fn override_audio_transcription_language(
+    body: &[u8],
+    content_type: &str,
+    language: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let Some(language) = normalize_audio_transcription_language(language) else {
+        return Ok(body.to_vec());
+    };
+    if find_bytes(body, b"name=\"language\"").is_some() {
+        return Ok(body.to_vec());
+    }
+
+    let boundary = multipart_boundary(content_type)
+        .ok_or_else(|| anyhow::anyhow!("音频转写请求缺少 multipart boundary"))?;
+    let closing = format!("--{boundary}--");
+    let closing_position = find_bytes(body, closing.as_bytes())
+        .ok_or_else(|| anyhow::anyhow!("音频转写请求缺少 multipart 结束边界"))?;
+    let prefix = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n{language}\r\n"
+    );
+    let mut next = Vec::with_capacity(body.len() + prefix.len());
+    next.extend_from_slice(&body[..closing_position]);
+    next.extend_from_slice(prefix.as_bytes());
+    next.extend_from_slice(&body[closing_position..]);
+    Ok(next)
+}
+
+fn normalize_audio_transcription_language(language: &str) -> Option<String> {
+    let language = language.trim().split(['-', '_']).next().unwrap_or_default();
+    if language.is_empty()
+        || !language
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    Some(language.to_ascii_lowercase())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedAudioTranscriptionRequest {
+    pub body: Vec<u8>,
+    pub converted_to_wav: bool,
+    pub input_was_webm: bool,
+}
+
+pub fn prepare_audio_transcription_request(
+    body: &[u8],
+    content_type: &str,
+    model: &str,
+    force_wav: bool,
+) -> anyhow::Result<PreparedAudioTranscriptionRequest> {
+    let boundary = multipart_boundary(content_type)
+        .ok_or_else(|| anyhow::anyhow!("音频转写请求缺少 multipart boundary"))?;
+    let Some(file_part) = multipart_file_part(body, &boundary)? else {
+        anyhow::bail!("音频转写请求缺少 file 字段");
+    };
+    let input_was_webm = file_part.is_webm;
+    let converted_to_wav = force_wav && input_was_webm;
+    let next = if converted_to_wav {
+        let wav = transcode_webm_opus_to_wav(&body[file_part.data_start..file_part.data_end])?;
+        replace_multipart_audio_file(body, file_part, &wav)?
+    } else {
+        body.to_vec()
+    };
+    let body = override_audio_transcription_model(&next, content_type, model)?;
+    Ok(PreparedAudioTranscriptionRequest {
+        body,
+        converted_to_wav,
+        input_was_webm,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MultipartFilePart {
+    headers_start: usize,
+    headers_end: usize,
+    data_start: usize,
+    data_end: usize,
+    is_webm: bool,
+}
+
+fn multipart_file_part(body: &[u8], boundary: &str) -> anyhow::Result<Option<MultipartFilePart>> {
+    let disposition = b"name=\"file\"";
+    let Some(field_position) = find_bytes(body, disposition) else {
+        return Ok(None);
+    };
+    let marker = format!("--{boundary}\r\n");
+    let headers_start = rfind_bytes(&body[..field_position], marker.as_bytes())
+        .map(|position| position + marker.len())
+        .ok_or_else(|| anyhow::anyhow!("音频转写 file 字段缺少起始边界"))?;
+    let headers_end = find_bytes(&body[field_position..], b"\r\n\r\n")
+        .map(|offset| field_position + offset)
+        .ok_or_else(|| anyhow::anyhow!("音频转写 file 字段格式无效"))?;
+    let data_start = headers_end + 4;
+    let next_boundary = format!("\r\n--{boundary}");
+    let data_end = find_bytes(&body[data_start..], next_boundary.as_bytes())
+        .map(|offset| data_start + offset)
+        .ok_or_else(|| anyhow::anyhow!("音频转写 file 字段缺少结束边界"))?;
+    let headers = std::str::from_utf8(&body[headers_start..headers_end])
+        .context("音频转写 file 字段头部不是有效文本")?;
+    let normalized = headers.to_ascii_lowercase();
+    let is_webm = normalized.contains("content-type: audio/webm")
+        || normalized.contains("filename=\"") && normalized.contains(".webm\"");
+    Ok(Some(MultipartFilePart {
+        headers_start,
+        headers_end,
+        data_start,
+        data_end,
+        is_webm,
+    }))
+}
+
+fn replace_multipart_audio_file(
+    body: &[u8],
+    file_part: MultipartFilePart,
+    wav: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let headers = std::str::from_utf8(&body[file_part.headers_start..file_part.headers_end])
+        .context("音频转写 file 字段头部不是有效文本")?;
+    let mut has_content_type = false;
+    let headers = headers
+        .split("\r\n")
+        .map(|line| {
+            if line.to_ascii_lowercase().starts_with("content-type:") {
+                has_content_type = true;
+                "Content-Type: audio/wav".to_string()
+            } else if line
+                .to_ascii_lowercase()
+                .starts_with("content-disposition:")
+            {
+                replace_filename_extension(line, "wav")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut rewritten_headers = headers.join("\r\n");
+    if !has_content_type {
+        rewritten_headers.push_str("\r\nContent-Type: audio/wav");
+    }
+    let mut next =
+        Vec::with_capacity(body.len() - (file_part.data_end - file_part.data_start) + wav.len());
+    next.extend_from_slice(&body[..file_part.headers_start]);
+    next.extend_from_slice(rewritten_headers.as_bytes());
+    next.extend_from_slice(b"\r\n\r\n");
+    next.extend_from_slice(wav);
+    next.extend_from_slice(&body[file_part.data_end..]);
+    Ok(next)
+}
+
+fn replace_filename_extension(line: &str, extension: &str) -> String {
+    let Some(filename_start) = line.find("filename=\"").map(|position| position + 10) else {
+        return line.to_string();
+    };
+    let Some(filename_end) = line[filename_start..]
+        .find('"')
+        .map(|position| filename_start + position)
+    else {
+        return line.to_string();
+    };
+    let filename = &line[filename_start..filename_end];
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(filename);
+    format!(
+        "{}{}.{}{}",
+        &line[..filename_start],
+        stem,
+        extension,
+        &line[filename_end..]
+    )
+}
+
 fn multipart_boundary(content_type: &str) -> Option<String> {
     content_type
         .split(';')
@@ -831,6 +1171,16 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
             haystack
                 .windows(needle.len())
                 .position(|window| window == needle)
+        })
+        .flatten()
+}
+
+fn rfind_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    (!needle.is_empty())
+        .then(|| {
+            haystack
+                .windows(needle.len())
+                .rposition(|window| window == needle)
         })
         .flatten()
 }

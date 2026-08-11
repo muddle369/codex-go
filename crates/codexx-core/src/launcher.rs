@@ -761,6 +761,8 @@ async fn handle_helper_connection(
     let path = raw_path.split('?').next().unwrap_or(raw_path);
     let request_user_agent = header_value_from_headers(&request_headers, "user-agent");
     let request_content_type = header_value_from_headers(&request_headers, "content-type");
+    let request_audio_language =
+        header_value_from_headers(&request_headers, "x-codexgo-audio-language");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -780,6 +782,7 @@ async fn handle_helper_connection(
             request_body_bytes,
             request_content_type.as_deref(),
             request_user_agent.as_deref(),
+            request_audio_language.as_deref(),
             method,
             path,
             remote_addr_text,
@@ -1042,41 +1045,44 @@ async fn handle_audio_transcriptions_proxy_connection(
     request_body: &[u8],
     request_content_type: Option<&str>,
     request_user_agent: Option<&str>,
+    request_audio_language: Option<&str>,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
 ) -> anyhow::Result<()> {
-    let upstream = match crate::protocol_proxy::open_audio_transcriptions_proxy_request(
-        request_body,
-        request_content_type.unwrap_or_default(),
-        request_user_agent,
-    )
-    .await
-    {
-        Ok(upstream) => upstream,
-        Err(error) => {
-            let body = serde_json::to_vec(&serde_json::json!({
-                "status": "failed",
-                "message": error.to_string()
-            }))?;
-            write_http_response(
-                stream,
-                "502 Bad Gateway",
-                "application/json; charset=utf-8",
-                &body,
-            )
-            .await?;
-            log_helper_response(
-                "helper.audio_transcriptions_proxy_failed",
-                method,
-                path,
-                "502 Bad Gateway",
-                remote_addr_text,
-            );
-            stream.shutdown().await?;
-            return Ok(());
-        }
-    };
+    let upstream =
+        match crate::protocol_proxy::open_audio_transcriptions_proxy_request_with_language(
+            request_body,
+            request_content_type.unwrap_or_default(),
+            request_user_agent,
+            request_audio_language,
+        )
+        .await
+        {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "status": "failed",
+                    "message": error.to_string()
+                }))?;
+                write_http_response(
+                    stream,
+                    "502 Bad Gateway",
+                    "application/json; charset=utf-8",
+                    &body,
+                )
+                .await?;
+                log_helper_response(
+                    "helper.audio_transcriptions_proxy_failed",
+                    method,
+                    path,
+                    "502 Bad Gateway",
+                    remote_addr_text,
+                );
+                stream.shutdown().await?;
+                return Ok(());
+            }
+        };
     let status = upstream.status();
     let is_success = upstream.is_success();
     let content_type = if upstream.content_type.is_empty() {
@@ -2088,7 +2094,11 @@ async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
         true,
     )
     .await?;
-    Ok(runtime_evaluate_result_is_true(&result))
+    if !runtime_evaluate_result_is_true(&result) {
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 fn runtime_evaluate_result_is_true(result: &Value) -> bool {
@@ -2102,34 +2112,78 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
 
 async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
-    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
-    let websocket_url = target
-        .web_socket_debugger_url
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let script = crate::assets::injection_script_with_settings(helper_port, &settings);
-    let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
-        debug_port,
-        StatusStore::default(),
-    )));
-    let result = crate::bridge::install_bridge(
-        websocket_url,
-        crate::bridge::BRIDGE_BINDING_NAME,
-        Arc::new(move |path, payload| {
-            let ctx = ctx.clone();
-            Box::pin(
-                async move { Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await) },
-            )
-        }),
-        &[script],
-    )
-    .await;
-    if result.is_ok() {
-        crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(debug_port)
-            .await;
+    let primary_target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
+    let mut injection_targets = vec![primary_target.clone()];
+    for target in targets.iter().filter(|target| {
+        crate::cdp::is_injectable_page_target(target)
+            && crate::cdp::is_global_dictation_page_target(target)
+    }) {
+        if target.id != primary_target.id {
+            injection_targets.push(target.clone());
+        }
     }
-    result
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let mut primary_error = None;
+    for target in injection_targets {
+        let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
+            if target.id == primary_target.id {
+                primary_error = Some(anyhow::anyhow!("selected CDP target has no websocket URL"));
+            }
+            continue;
+        };
+        let is_global_dictation = crate::cdp::is_global_dictation_page_target(&target);
+        let script = if is_global_dictation {
+            crate::assets::audio_transcription_injection_script(helper_port)
+        } else {
+            crate::assets::injection_script_with_settings(helper_port, &settings)
+        };
+        let ctx = crate::routes::BridgeContext::core(Arc::new(
+            crate::routes::CoreRuntimeService::new(debug_port, StatusStore::default()),
+        ));
+        let result = crate::bridge::install_bridge(
+            websocket_url,
+            crate::bridge::BRIDGE_BINDING_NAME,
+            Arc::new(move |path, payload| {
+                let ctx = ctx.clone();
+                Box::pin(async move {
+                    Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await)
+                })
+            }),
+            &[script],
+        )
+        .await;
+        if let Err(error) = result {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.page_injection_failed",
+                serde_json::json!({
+                    "target_id": target.id,
+                    "target_url": target.url,
+                    "is_primary": target.id == primary_target.id,
+                    "injection_kind": if is_global_dictation { "audio" } else { "full" },
+                    "message": error.to_string()
+                }),
+            );
+            if target.id == primary_target.id {
+                primary_error = Some(error);
+            }
+        } else {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.page_injection_ok",
+                serde_json::json!({
+                    "target_id": target.id,
+                    "target_url": target.url,
+                    "is_primary": target.id == primary_target.id,
+                    "injection_kind": if is_global_dictation { "audio" } else { "full" }
+                }),
+            );
+        }
+    }
+    if let Some(error) = primary_error {
+        return Err(error);
+    }
+
+    crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(debug_port).await;
+    Ok(())
 }
 
 pub fn build_macos_open_command(

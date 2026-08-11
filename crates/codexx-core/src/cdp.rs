@@ -285,6 +285,7 @@ pub fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
     is_codex_page_target(target)
         && !is_avatar_overlay_page_target(target)
         && !is_quick_chat_page_target(target)
+        && !is_global_dictation_page_target(target)
 }
 
 pub fn is_avatar_overlay_page_target(target: &CdpTarget) -> bool {
@@ -298,6 +299,10 @@ pub fn is_quick_chat_page_target(target: &CdpTarget) -> bool {
             || route == "/chatgpt/quick-chat-prewarm"
             || route.starts_with("/chatgpt/quick-chat/")
     })
+}
+
+pub fn is_global_dictation_page_target(target: &CdpTarget) -> bool {
+    initial_route(target).is_some_and(|route| route.eq_ignore_ascii_case("/global-dictation"))
 }
 
 fn initial_route(target: &CdpTarget) -> Option<String> {
@@ -399,6 +404,18 @@ mod endpoint_tests {
         let (port, server) = serve_once(|port| {
             format!(
                 r#"[{{"id":"quick-chat","type":"page","title":"Codex","url":"app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+            )
+        });
+
+        assert!(!endpoint_available(port));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn endpoint_available_rejects_global_dictation_only_target() {
+        let (port, server) = serve_once(|port| {
+            format!(
+                r#"[{{"id":"dictation","type":"page","title":"Codex","url":"app://-/index.html?initialRoute=%2Fglobal-dictation","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
             )
         });
 

@@ -1,5 +1,6 @@
 pub mod app_paths;
 pub mod assets;
+pub mod audio_transcription;
 pub mod brand;
 pub mod bridge;
 pub mod cdp;
