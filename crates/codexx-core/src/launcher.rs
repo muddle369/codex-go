@@ -2113,16 +2113,17 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
 async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let primary_target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
+    let settings = SettingsStore::default().load().unwrap_or_default();
     let mut injection_targets = vec![primary_target.clone()];
     for target in targets.iter().filter(|target| {
         crate::cdp::is_injectable_page_target(target)
             && crate::cdp::is_global_dictation_page_target(target)
+            && settings.audio_transcription_enabled
     }) {
         if target.id != primary_target.id {
             injection_targets.push(target.clone());
         }
     }
-    let settings = SettingsStore::default().load().unwrap_or_default();
     let mut primary_error = None;
     for target in injection_targets {
         let Some(websocket_url) = target.web_socket_debugger_url.as_deref() else {
@@ -2132,11 +2133,34 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
             continue;
         };
         let is_global_dictation = crate::cdp::is_global_dictation_page_target(&target);
-        let script = if is_global_dictation {
-            crate::assets::audio_transcription_injection_script(helper_port)
-        } else {
-            crate::assets::injection_script_with_settings(helper_port, &settings)
-        };
+        if is_global_dictation {
+            let script = crate::assets::audio_transcription_injection_script(helper_port);
+            let result = crate::bridge::evaluate_script(websocket_url, &script).await;
+            if let Err(error) = result {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.page_injection_failed",
+                    serde_json::json!({
+                        "target_id": target.id,
+                        "target_url": target.url,
+                        "is_primary": false,
+                        "injection_kind": "audio-lightweight",
+                        "message": error.to_string()
+                    }),
+                );
+            } else {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.page_injection_ok",
+                    serde_json::json!({
+                        "target_id": target.id,
+                        "target_url": target.url,
+                        "is_primary": false,
+                        "injection_kind": "audio-lightweight"
+                    }),
+                );
+            }
+            continue;
+        }
+        let script = crate::assets::injection_script_with_settings(helper_port, &settings);
         let ctx = crate::routes::BridgeContext::core(Arc::new(
             crate::routes::CoreRuntimeService::new(debug_port, StatusStore::default()),
         ));

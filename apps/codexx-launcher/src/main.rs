@@ -385,6 +385,8 @@ impl LaunchHooks for LauncherHooks {
         let hooks = self.clone();
         let task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut next_audio_scan =
+                tokio::time::Instant::now() + std::time::Duration::from_secs(15);
             let mut injected_global_dictation_targets = HashSet::new();
             let mut bridge_health_failures = 0;
             loop {
@@ -392,27 +394,36 @@ impl LaunchHooks for LauncherHooks {
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
                         let app_dir = hooks.app_dir.lock().unwrap().clone();
-                        if let Some(app_dir) = app_dir.clone() {
-                            let ctx = BridgeContext::core_with_data_and_app_dir(
-                                hooks.runtime.clone(),
-                                hooks.data.clone(),
-                                app_dir,
-                            );
-                            if let Err(error) = inject_pending_global_dictation_targets(
-                                debug_port,
-                                helper_port,
-                                ctx,
-                                hooks.runtime.clone(),
-                                &mut injected_global_dictation_targets,
-                            ).await {
-                                let _ = codexx_core::diagnostic_log::append_diagnostic_log(
-                                    "bridge.audio_target_scan_failed",
-                                    json!({
-                                        "debug_port": debug_port,
-                                        "helper_port": helper_port,
-                                        "message": error.to_string()
-                                    }),
-                                );
+                        if app_dir.is_some() {
+                            let audio_transcription_enabled = codexx_core::settings::SettingsStore::default()
+                                .load()
+                                .unwrap_or_default()
+                                .audio_transcription_enabled;
+                            if audio_transcription_enabled {
+                                if tokio::time::Instant::now() >= next_audio_scan {
+                                    next_audio_scan = tokio::time::Instant::now()
+                                        + std::time::Duration::from_secs(15);
+                                    if let Err(error) = inject_pending_global_dictation_targets(
+                                        debug_port,
+                                        helper_port,
+                                        hooks.runtime.clone(),
+                                        &mut injected_global_dictation_targets,
+                                        true,
+                                    ).await {
+                                        let _ = codexx_core::diagnostic_log::append_diagnostic_log(
+                                            "bridge.audio_target_scan_failed",
+                                            json!({
+                                                "debug_port": debug_port,
+                                                "helper_port": helper_port,
+                                                "message": error.to_string()
+                                            }),
+                                        );
+                                    }
+                                }
+                            } else {
+                                injected_global_dictation_targets.clear();
+                                next_audio_scan = tokio::time::Instant::now()
+                                    + std::time::Duration::from_secs(15);
                             }
                         }
                         let bridge_healthy = launcher_bridge_health_ok(debug_port).await.unwrap_or(false);
@@ -789,18 +800,19 @@ async fn try_inject_with_context(
 ) -> anyhow::Result<()> {
     let targets = codexx_core::cdp::list_targets(debug_port).await?;
     let primary_target = codexx_core::cdp::pick_injectable_codex_page_target(&targets)?;
+    let settings = codexx_core::settings::SettingsStore::default()
+        .load()
+        .unwrap_or_default();
     let mut injection_targets = vec![primary_target.clone()];
     for target in targets.iter().filter(|target| {
         codexx_core::cdp::is_injectable_page_target(target)
             && codexx_core::cdp::is_global_dictation_page_target(target)
+            && settings.audio_transcription_enabled
     }) {
         if target.id != primary_target.id {
             injection_targets.push(target.clone());
         }
     }
-    let settings = codexx_core::settings::SettingsStore::default()
-        .load()
-        .unwrap_or_default();
     let user_bundle = runtime
         .user_scripts
         .build_enabled_bundle()
@@ -815,11 +827,21 @@ async fn try_inject_with_context(
             runtime.set_websocket_url(websocket_url);
         }
         let is_global_dictation = codexx_core::cdp::is_global_dictation_page_target(&target);
-        let script = if is_global_dictation {
-            codexx_core::assets::audio_transcription_injection_script(helper_port)
-        } else {
-            codexx_core::assets::injection_script_with_settings(helper_port, &settings)
-        };
+        if is_global_dictation {
+            let script = codexx_core::assets::audio_transcription_injection_script(helper_port);
+            codexx_core::bridge::evaluate_script(websocket_url, &script).await?;
+            let _ = codexx_core::diagnostic_log::append_diagnostic_log(
+                "bridge.page_injection_ok",
+                json!({
+                    "target_id": target.id,
+                    "target_url": target.url,
+                    "is_primary": false,
+                    "injection_kind": "audio-lightweight"
+                }),
+            );
+            continue;
+        }
+        let script = codexx_core::assets::injection_script_with_settings(helper_port, &settings);
         let scripts = if is_primary && !user_bundle.is_empty() {
             vec![script, user_bundle.clone()]
         } else {
@@ -865,7 +887,11 @@ fn should_reinject_bridge(consecutive_failures: &mut u8, healthy: bool) -> bool 
 fn pending_global_dictation_targets(
     targets: &[codexx_core::cdp::CdpTarget],
     injected_target_ids: &HashSet<String>,
+    audio_transcription_enabled: bool,
 ) -> Vec<codexx_core::cdp::CdpTarget> {
+    if !audio_transcription_enabled {
+        return Vec::new();
+    }
     targets
         .iter()
         .filter(|target| {
@@ -880,9 +906,9 @@ fn pending_global_dictation_targets(
 async fn inject_pending_global_dictation_targets(
     debug_port: u16,
     helper_port: u16,
-    ctx: BridgeContext,
     runtime: Arc<LauncherRuntimeService>,
     injected_target_ids: &mut HashSet<String>,
+    audio_transcription_enabled: bool,
 ) -> anyhow::Result<()> {
     let targets = codexx_core::cdp::list_targets(debug_port).await?;
     let active_target_ids = targets
@@ -892,27 +918,15 @@ async fn inject_pending_global_dictation_targets(
         .collect::<HashSet<_>>();
     injected_target_ids.retain(|target_id| active_target_ids.contains(target_id));
 
-    for target in pending_global_dictation_targets(&targets, injected_target_ids) {
+    for target in
+        pending_global_dictation_targets(&targets, injected_target_ids, audio_transcription_enabled)
+    {
         let websocket_url = target
             .web_socket_debugger_url
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("global dictation target has no websocket URL"))?;
         let script = codexx_core::assets::audio_transcription_injection_script(helper_port);
-        codexx_core::bridge::install_bridge(
-            websocket_url,
-            codexx_core::bridge::BRIDGE_BINDING_NAME,
-            Arc::new({
-                let ctx = ctx.clone();
-                move |path, payload| {
-                    let ctx = ctx.clone();
-                    Box::pin(async move {
-                        Ok(codexx_core::routes::handle_bridge_request(ctx, &path, payload).await)
-                    })
-                }
-            }),
-            &[script],
-        )
-        .await?;
+        codexx_core::bridge::evaluate_script(websocket_url, &script).await?;
         injected_target_ids.insert(target.id.clone());
         let _ = codexx_core::diagnostic_log::append_diagnostic_log(
             "bridge.audio_target_injection_ok",
@@ -1118,7 +1132,7 @@ mod tests {
         ];
         let injected = std::collections::HashSet::new();
 
-        let pending = pending_global_dictation_targets(&targets, &injected);
+        let pending = pending_global_dictation_targets(&targets, &injected, true);
 
         assert_eq!(
             pending
@@ -1127,6 +1141,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["dictation"]
         );
+    }
+
+    #[test]
+    fn watchdog_skips_global_dictation_targets_when_audio_is_disabled() {
+        let targets = vec![codexx_core::cdp::CdpTarget {
+            id: "dictation".to_string(),
+            target_type: "page".to_string(),
+            title: "Codex".to_string(),
+            url: "app://-/index.html?initialRoute=%2Fglobal-dictation".to_string(),
+            web_socket_debugger_url: Some(
+                "ws://127.0.0.1:9329/devtools/page/dictation".to_string(),
+            ),
+        }];
+
+        assert!(pending_global_dictation_targets(&targets, &HashSet::new(), false).is_empty());
     }
 
     #[test]

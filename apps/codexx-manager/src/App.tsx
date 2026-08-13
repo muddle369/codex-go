@@ -109,6 +109,7 @@ type BackendSettings = {
   relayProfilesEnabled: boolean;
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
+  audioTranscriptionEnabled: boolean;
   codexAppPluginEntryUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppForcePluginInstall: boolean;
@@ -608,6 +609,7 @@ const defaultSettings: BackendSettings = {
   relayProfilesEnabled: true,
   enhancementsEnabled: true,
   computerUseGuardEnabled: false,
+  audioTranscriptionEnabled: false,
   codexAppPluginEntryUnlock: true,
   codexAppPluginMarketplaceUnlock: true,
   codexAppForcePluginInstall: true,
@@ -2884,6 +2886,17 @@ function EnhanceScreen({
             <span>
               <strong>启用 Windows Computer Use Guard</strong>
               <small>默认关闭；开启后启动 Codex 时会自动保留官方 Computer Use 插件所需的 config.toml、bundled 插件和 notify 配置。</small>
+            </span>
+          </label>
+          <label className="switch-row">
+            <input
+              checked={form.audioTranscriptionEnabled}
+              onChange={(event) => onFormChange({ ...form, audioTranscriptionEnabled: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>
+              <strong>启用语音转写兼容</strong>
+              <small>默认关闭；开启后监听 Codex 语音窗口，并按需将 WebM/Opus 转换为 WAV。修改后需重启 Codex 生效。</small>
             </span>
           </label>
           <ModeSelector launchMode={form.launchMode} actions={actions} />
@@ -5644,6 +5657,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ...settings,
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
+    audioTranscriptionEnabled: settings.audioTranscriptionEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     relayCommonConfigContents,
     relayContextConfigContents,

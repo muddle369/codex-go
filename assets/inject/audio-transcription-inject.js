@@ -2,9 +2,9 @@
   const route = new URL(window.location.href).searchParams.get("initialRoute");
   if (route !== "/global-dictation") return;
 
-  const patchVersion = "20260811-audio-helper-v2";
+  const patchVersion = "20260813-audio-helper-v3";
   const endpoint = __CODEXGO_AUDIO_TRANSCRIPTION_ENDPOINT__;
-  const maxAttempts = 40;
+  const maxAttempts = 10;
   const retryDelayMs = 500;
 
   function appAssetUrl() {

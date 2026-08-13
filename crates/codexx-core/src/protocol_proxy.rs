@@ -745,6 +745,9 @@ pub async fn open_audio_transcriptions_proxy_request_with_language(
     language: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load().unwrap_or_default();
+    if !settings.audio_transcription_enabled {
+        anyhow::bail!("语音转写兼容未启用，请在 CodexGO 设置中开启后重启 Codex");
+    }
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
     validate_upstream(&relay)?;
     let content_type = content_type.trim();
@@ -755,12 +758,19 @@ pub async fn open_audio_transcriptions_proxy_request_with_language(
     let cached_capability = audio_format_capability(&capability_key);
     let force_wav =
         is_scd_audio_relay(&relay) || cached_capability == Some(AudioFormatCapability::RequiresWav);
-    let mut prepared = prepare_audio_transcription_request(
-        body,
-        content_type,
-        relay.audio_transcription_model.trim(),
-        force_wav,
-    )?;
+    let prepare_body = body.to_vec();
+    let prepare_content_type = content_type.to_string();
+    let prepare_model = relay.audio_transcription_model.trim().to_string();
+    let mut prepared = tokio::task::spawn_blocking(move || {
+        prepare_audio_transcription_request(
+            &prepare_body,
+            &prepare_content_type,
+            &prepare_model,
+            force_wav,
+        )
+    })
+    .await
+    .context("音频转写后台转换任务失败")??;
     let language_override = normalize_audio_transcription_language(language.unwrap_or_default());
     if let Some(language) = language_override.as_deref() {
         prepared.body =
@@ -805,12 +815,19 @@ pub async fn open_audio_transcriptions_proxy_request_with_language(
             let (response, response_body) = buffer_upstream_response(upstream).await?;
             upstream = response;
             if is_audio_format_rejection(upstream.status().as_u16(), &response_body) {
-                let mut retry = prepare_audio_transcription_request(
-                    body,
-                    content_type,
-                    relay.audio_transcription_model.trim(),
-                    true,
-                )?;
+                let retry_body = body.to_vec();
+                let retry_content_type = content_type.to_string();
+                let retry_model = relay.audio_transcription_model.trim().to_string();
+                let mut retry = tokio::task::spawn_blocking(move || {
+                    prepare_audio_transcription_request(
+                        &retry_body,
+                        &retry_content_type,
+                        &retry_model,
+                        true,
+                    )
+                })
+                .await
+                .context("音频转写后台重试转换任务失败")??;
                 if let Some(language) = language_override.as_deref() {
                     retry.body =
                         override_audio_transcription_language(&retry.body, content_type, language)?;

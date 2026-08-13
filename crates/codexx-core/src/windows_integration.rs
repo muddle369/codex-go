@@ -173,7 +173,7 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
 #[cfg(windows)]
 pub fn open_path(path: &Path) -> anyhow::Result<()> {
     let operation = wide_null("open");
-    let file = wide_null(&path.to_string_lossy());
+    let file = wide_null(path);
     let result = unsafe {
         ShellExecuteW(
             None,

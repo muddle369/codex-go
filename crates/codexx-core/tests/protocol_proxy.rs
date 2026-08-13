@@ -1725,6 +1725,7 @@ async fn audio_transcriptions_proxy_uses_configured_model_override() {
         request
     });
     let settings = json!({
+        "audioTranscriptionEnabled": true,
         "relayProfiles": [{
             "id": "audio",
             "name": "Audio",
@@ -1810,6 +1811,7 @@ async fn quick_scd_audio_transcriptions_proxy_uploads_wav() {
         request
     });
     let settings = json!({
+        "audioTranscriptionEnabled": true,
         "relayProfiles": [{
             "id": "codexx-quick",
             "name": "SCD_Ai",
@@ -1918,6 +1920,7 @@ async fn unknown_audio_provider_retries_webm_as_wav_after_format_error() {
         requests
     });
     let settings = json!({
+        "audioTranscriptionEnabled": true,
         "relayProfiles": [{
             "id": "auto-audio-provider",
             "name": "Auto Audio",
