@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +42,12 @@ pub struct UpdateInstall {
     pub release: Release,
     pub installer_path: PathBuf,
     pub launched: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UpdateDownload {
+    pub release: Release,
+    pub installer_path: PathBuf,
 }
 
 pub fn parse_version_tag(value: &str) -> anyhow::Result<Vec<u64>> {
@@ -199,12 +207,33 @@ pub async fn perform_update(
     release: &Release,
     download_dir: &Path,
 ) -> anyhow::Result<UpdateInstall> {
+    let downloaded = download_update(release, download_dir).await?;
+    launch_installer(&downloaded.installer_path)?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "update.launch.completed",
+        json!({
+            "version": downloaded.release.version,
+            "assetName": downloaded.release.asset_name,
+            "installerPath": downloaded.installer_path.to_string_lossy(),
+        }),
+    );
+    Ok(UpdateInstall {
+        release: downloaded.release,
+        installer_path: downloaded.installer_path,
+        launched: true,
+    })
+}
+
+pub async fn download_update(
+    release: &Release,
+    download_dir: &Path,
+) -> anyhow::Result<UpdateDownload> {
     let url = release
         .asset_url
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("没有可下载的 Release asset"))?;
     let _ = crate::diagnostic_log::append_diagnostic_log(
-        "update.perform.start",
+        "update.download.start",
         json!({
             "version": release.version,
             "assetName": release.asset_name,
@@ -275,30 +304,9 @@ pub async fn perform_update(
             "bytes": bytes.len(),
         }),
     );
-    if let Err(error) = launch_installer(&installer_path) {
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "update.launch.failed",
-            json!({
-                "version": release.version,
-                "assetName": release.asset_name,
-                "installerPath": installer_path.to_string_lossy(),
-                "error": error.to_string(),
-            }),
-        );
-        return Err(error);
-    }
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "update.launch.completed",
-        json!({
-            "version": release.version,
-            "assetName": release.asset_name,
-            "installerPath": installer_path.to_string_lossy(),
-        }),
-    );
-    Ok(UpdateInstall {
+    Ok(UpdateDownload {
         release: release.clone(),
         installer_path,
-        launched: true,
     })
 }
 
@@ -402,11 +410,7 @@ fn is_macos_installer_asset(name: &str) -> bool {
 pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new(path)
-            .creation_flags(crate::windows_integration::CREATE_NO_WINDOW)
-            .spawn()
-            .map(|_| ())
+        crate::windows_integration::open_path(path)
             .map_err(|error| anyhow::anyhow!("启动安装包失败：{error}"))
     }
 
@@ -423,5 +427,70 @@ pub fn launch_installer(path: &Path) -> anyhow::Result<()> {
     {
         let _ = path;
         anyhow::bail!("当前平台不支持启动安装包")
+    }
+}
+
+pub fn validate_downloaded_installer(path: &Path, download_dir: &Path) -> anyhow::Result<PathBuf> {
+    let download_dir = download_dir
+        .canonicalize()
+        .map_err(|error| anyhow::anyhow!("更新目录不可用：{error}"))?;
+    let path = path
+        .canonicalize()
+        .map_err(|error| anyhow::anyhow!("安装包不存在或不可访问：{error}"))?;
+    if !path.starts_with(&download_dir) {
+        anyhow::bail!("安装包不在受信任的更新目录中");
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if cfg!(windows) && !is_windows_installer_asset(&name) {
+        anyhow::bail!("当前文件不是受支持的 Windows 安装包");
+    }
+    if cfg!(target_os = "macos") && !is_macos_installer_asset(&name) {
+        anyhow::bail!("当前文件不是受支持的 macOS DMG");
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "macos")]
+pub fn request_macos_codex_quit(debug_port: u16) -> anyhow::Result<()> {
+    for process_id in crate::watcher::find_macos_codex_processes_for_debug_port(debug_port) {
+        let _ = Command::new("kill")
+            .args(["-TERM", &process_id.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    wait_for_macos_codex_exit(debug_port, std::time::Duration::from_secs(5));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn force_quit_macos_codex(debug_port: u16) -> anyhow::Result<()> {
+    for process_id in crate::watcher::find_macos_codex_processes_for_debug_port(debug_port) {
+        let _ = Command::new("kill")
+            .args(["-9", &process_id.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    wait_for_macos_codex_exit(debug_port, std::time::Duration::from_secs(3));
+    if crate::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("强制关闭 Codex 失败，请手动退出后重试")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_macos_codex_exit(debug_port: u16, timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if crate::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }

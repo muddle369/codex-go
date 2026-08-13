@@ -307,4 +307,13 @@ mod tests {
         assert!(script.contains("__codexPlusAppServerModelRequestPatchInFlight"));
         assert!(script.contains("return window.__codexSessionDeleteBridge"));
     }
+
+    #[test]
+    fn renderer_injection_replaces_existing_paste_fix_listener() {
+        let script = injection_script(58321);
+
+        assert!(script.contains("__codexPlusPasteFixListener"));
+        assert!(script.contains("removeEventListener(\"paste\""));
+        assert!(script.contains("addEventListener(\"paste\", pasteFixListener"));
+    }
 }

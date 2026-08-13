@@ -1,6 +1,7 @@
 use codexx_core::update::{
     Release, download_asset_to, is_newer_version, parse_version_tag, release_from_github_payload,
     release_from_latest_json_payload, safe_asset_name, select_update_asset,
+    validate_downloaded_installer,
 };
 use serde_json::json;
 
@@ -164,4 +165,36 @@ fn download_asset_to_writes_bytes() {
 
     assert_eq!(path, dir.path().join("pkg.zip"));
     assert_eq!(std::fs::read(path).unwrap(), b"abcdef");
+}
+
+#[test]
+fn downloaded_installer_must_be_inside_update_directory() {
+    let update_dir = tempfile::tempdir().unwrap();
+    let outside_dir = tempfile::tempdir().unwrap();
+    let installer = outside_dir.path().join(platform_installer_name());
+    std::fs::write(&installer, b"installer").unwrap();
+
+    assert!(validate_downloaded_installer(&installer, update_dir.path()).is_err());
+}
+
+#[test]
+fn downloaded_installer_accepts_current_platform_package() {
+    let update_dir = tempfile::tempdir().unwrap();
+    let installer = update_dir.path().join(platform_installer_name());
+    std::fs::write(&installer, b"installer").unwrap();
+
+    assert_eq!(
+        validate_downloaded_installer(&installer, update_dir.path()).unwrap(),
+        installer.canonicalize().unwrap()
+    );
+}
+
+fn platform_installer_name() -> &'static str {
+    if cfg!(windows) {
+        "CodexGO-test-windows-x64-setup.exe"
+    } else if cfg!(target_os = "macos") {
+        "CodexGO-test-macos-arm64.dmg"
+    } else {
+        "CodexGO-test-installer.bin"
+    }
 }

@@ -5,7 +5,7 @@ use std::iter::once;
 #[cfg(windows)]
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
 use anyhow::Context;
@@ -35,12 +35,12 @@ use windows::Win32::UI::Shell::{
     FOLDERID_Desktop, IShellLinkW, KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellExecuteW, ShellLink,
 };
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE;
-#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE,
     SetForegroundWindow, ShowWindow,
 };
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, SW_SHOWNORMAL};
 #[cfg(windows)]
 use windows::core::{Interface, PCWSTR, PWSTR};
 
@@ -161,6 +161,27 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
             PCWSTR::null(),
             PCWSTR::null(),
             SW_SHOWMINNOACTIVE,
+        )
+    };
+    let code = result.0 as isize;
+    if code <= 32 {
+        anyhow::bail!("ShellExecuteW returned {code}");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn open_path(path: &Path) -> anyhow::Result<()> {
+    let operation = wide_null("open");
+    let file = wide_null(&path.to_string_lossy());
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(operation.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
         )
     };
     let code = result.0 as isize;

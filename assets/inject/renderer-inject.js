@@ -252,8 +252,12 @@
   }
   installCodexStepwise();
 
+  if (window.__codexPlusPasteFixListener) {
+    document.removeEventListener("paste", window.__codexPlusPasteFixListener, true);
+    window.__codexPlusPasteFixListener = null;
+  }
   if (window.__CODEX_PLUS_PASTE_FIX__?.enabled) {
-    document.addEventListener("paste", (event) => {
+    const pasteFixListener = (event) => {
       const target = event.target;
       if (!(target instanceof HTMLTextAreaElement) && !(target instanceof HTMLElement && target.isContentEditable)) return;
       const text = event.clipboardData?.getData("text/plain");
@@ -267,7 +271,9 @@
         document.execCommand("insertText", false, text);
       }
       target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste", data: text }));
-    }, true);
+    };
+    window.__codexPlusPasteFixListener = pasteFixListener;
+    document.addEventListener("paste", pasteFixListener, true);
   }
   window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   window.__codexConversationTimelineNodeCounter = window.__codexConversationTimelineNodeCounter || 0;

@@ -15,7 +15,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import codexxLogo from "../../../assets/images/codex-go-png.png";
 import { BRAND } from "./brand";
 import {
@@ -469,6 +469,10 @@ type UpdateResult = CommandResult<{
   assetUrl?: string | null;
   updateAvailable?: boolean;
   installedPath?: string;
+  readyToInstall?: boolean;
+  launched?: boolean;
+  codexRunning?: boolean;
+  needsForceQuit?: boolean;
   progress?: number;
 }>;
 
@@ -734,6 +738,7 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
   const [watcher, setWatcher] = useState<WatcherResult | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<UpdateInstallProgress>({
     active: false,
     percent: 0,
@@ -1248,17 +1253,80 @@ export function App() {
   };
 
   const checkUpdate = async (silent = false) => {
-    const result = await run(() => call<UpdateResult>("check_update"));
-    if (result) {
-      setUpdate(result);
-      if (!silent || result.updateAvailable) {
-        showNotice("GitHub Release 检查", result.message, result.status);
+    if (checkingUpdate || updateInstallProgress.active) return;
+    setCheckingUpdate(true);
+    try {
+      const result = await run(() => call<UpdateResult>("check_update"));
+      if (result) {
+        setUpdate(result);
+        if (!silent || result.updateAvailable) {
+          showNotice("GitHub Release 检查", result.message, result.status);
+        }
       }
+    } finally {
+      setCheckingUpdate(false);
     }
   };
 
+  const applyDownloadedUpdate = async (installerPath: string, forceCodexQuit = false) => {
+    setUpdateInstallProgress({ active: true, percent: 100, message: "正在准备启动安装程序…" });
+    const result = await run(() =>
+      call<UpdateResult>("apply_downloaded_update", {
+        installerPath,
+        forceCodexQuit,
+        debugPort: numberOrDefault(launchForm.debugPort, 9329),
+      }),
+    );
+    if (!result) {
+      setUpdateInstallProgress({ active: false, percent: 100, message: "启动安装程序失败，请重试。" });
+      return;
+    }
+    setUpdate((current) => ({ ...(current ?? result), ...result }));
+    if (result.needsForceQuit && platformKind === "macos") {
+      setUpdateInstallProgress({ active: false, percent: 100, message: result.message });
+      const forceConfirmed = await confirm(
+        "Codex 未能在 5 秒内正常退出。强制关闭可能丢失尚未发送的输入或正在执行的任务，是否强制关闭并继续？",
+        {
+          title: "强制关闭 Codex",
+          kind: "warning",
+          okLabel: "强制关闭并继续",
+          cancelLabel: "取消",
+        },
+      );
+      if (forceConfirmed) await applyDownloadedUpdate(installerPath, true);
+      return;
+    }
+    if (!isSuccessStatus(result.status)) {
+      setUpdateInstallProgress({ active: false, percent: 100, message: result.message });
+      showNotice("更新安装", result.message, result.status);
+      return;
+    }
+    setUpdateInstallProgress({ active: true, percent: 100, message: result.message });
+    showNotice("更新安装", result.message, result.status);
+  };
+
+  const confirmAndApplyUpdate = async (installerPath: string) => {
+    const message =
+      platformKind === "windows"
+        ? "请先保存工作并手动退出 Codex。点击继续后，CodexGO 将检查 Codex 是否已退出，启动系统安装程序，然后退出自身。"
+        : platformKind === "macos"
+          ? "请先保存工作。点击继续后，CodexGO 将尝试正常退出 Codex、挂载 DMG，然后退出自身；若 Codex 无法正常退出，会再次询问是否强制关闭。"
+          : "请保存工作并退出 Codex。点击继续后将启动安装程序并退出 CodexGO。";
+    const confirmed = await confirm(message, {
+      title: `安装 ${update?.latestVersion ?? "新版本"}`,
+      kind: "warning",
+      okLabel: "继续安装",
+      cancelLabel: "取消",
+    });
+    if (confirmed) await applyDownloadedUpdate(installerPath);
+  };
+
   const performUpdate = async () => {
-    if (updateInstallProgress.active) return;
+    if (updateInstallProgress.active || checkingUpdate) return;
+    if (update?.installedPath && update.readyToInstall) {
+      await confirmAndApplyUpdate(update.installedPath);
+      return;
+    }
     const release =
       update?.latestVersion && update.assetName && update.assetUrl
         ? {
@@ -1294,20 +1362,24 @@ export function App() {
               ? "正在下载安装包…"
               : elapsedSeconds < 45
                 ? "正在写入安装包…"
-                : "下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。";
+                : "下载耗时较长，请保持窗口打开；完成或失败后会自动更新状态。";
         return { ...current, percent: nextPercent, message };
       });
     }, 500);
     try {
-      const result = await run(() => call<UpdateResult>("perform_update", { release }));
+      const result = await run(() => call<UpdateResult>("download_update", { release }));
       if (result) {
-        setUpdate(result);
+        setUpdate((current) => ({ ...(current ?? result), ...result }));
         setUpdateInstallProgress({
           active: false,
           percent: isSuccessStatus(result.status) ? 100 : 0,
           message: result.message,
         });
-        showNotice("更新安装", result.message, result.status);
+        if (isSuccessStatus(result.status) && result.installedPath) {
+          await confirmAndApplyUpdate(result.installedPath);
+        } else {
+          showNotice("更新下载", result.message, result.status);
+        }
       } else {
         setUpdateInstallProgress({
           active: false,
@@ -2167,7 +2239,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "about" ? <AboutScreen overview={overview} update={update} updateInstallProgress={updateInstallProgress} logs={logs} diagnostics={diagnostics} actions={actions} /> : null}
+          {route === "about" ? <AboutScreen overview={overview} update={update} checkingUpdate={checkingUpdate} updateInstallProgress={updateInstallProgress} logs={logs} diagnostics={diagnostics} actions={actions} /> : null}
           {route === "settings" ? (
             <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
@@ -2502,10 +2574,6 @@ function OverviewScreen({
         <CardContent>
           <LatestLaunch status={overview?.latest_launch ?? null} />
           <Toolbar>
-            <Button onClick={() => void actions.launch()}>
-              <Rocket className="h-4 w-4" />
-              {`启动 ${BRAND.productName}`}
-            </Button>
             <Button variant="secondary" onClick={() => void actions.goLogs()}>
               打开关于
             </Button>
@@ -3336,6 +3404,7 @@ function MaintenanceScreen({
 function AboutScreen({
   overview,
   update,
+  checkingUpdate,
   updateInstallProgress,
   logs,
   diagnostics,
@@ -3343,6 +3412,7 @@ function AboutScreen({
 }: {
   overview: OverviewResult | null;
   update: UpdateResult | null;
+  checkingUpdate: boolean;
   updateInstallProgress: UpdateInstallProgress;
   logs: LogsResult | null;
   diagnostics: DiagnosticsResult | null;
@@ -3399,9 +3469,18 @@ function AboutScreen({
             <small>{updateInstallProgress.message}</small>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.checkUpdate()}>检查更新</Button>
-            <Button disabled={updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
-              {updateInstallProgress.active ? "正在下载…" : "下载并运行安装包"}
+            <Button disabled={checkingUpdate || updateInstallProgress.active} onClick={() => void actions.checkUpdate()}>
+              <RefreshCw className={`h-4 w-4 ${checkingUpdate ? "animate-spin" : ""}`} />
+              {checkingUpdate ? "正在检查…" : "检查更新"}
+            </Button>
+            <Button disabled={checkingUpdate || updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
+              {updateInstallProgress.active
+                ? updateInstallProgress.percent >= 100
+                  ? "正在启动安装程序…"
+                  : "正在下载…"
+                : update?.installedPath && update.readyToInstall
+                  ? "运行已下载安装包"
+                  : "下载并运行安装包"}
             </Button>
           </Toolbar>
         </CardContent>

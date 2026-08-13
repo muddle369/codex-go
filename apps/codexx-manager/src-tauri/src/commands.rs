@@ -1600,7 +1600,9 @@ pub async fn check_update() -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub async fn perform_update(release: Option<codexx_core::update::Release>) -> CommandResult<Value> {
+pub async fn download_update(
+    release: Option<codexx_core::update::Release>,
+) -> CommandResult<Value> {
     let Some(release) = release else {
         return failed(
             "请先检查更新并选择可下载的 Release asset。",
@@ -1611,15 +1613,15 @@ pub async fn perform_update(release: Option<codexx_core::update::Release>) -> Co
         );
     };
     let download_dir = codexx_core::paths::default_app_state_dir().join("updates");
-    match codexx_core::update::perform_update(&release, &download_dir).await {
+    match codexx_core::update::download_update(&release, &download_dir).await {
         Ok(result) => ok(
-            "安装包已下载并启动，请按安装向导完成更新。",
+            "安装包已下载，确认退出相关程序后即可运行。",
             json!({
                 "currentVersion": codexx_core::version::VERSION,
                 "latestVersion": result.release.version,
                 "releaseSummary": result.release.body,
                 "installedPath": result.installer_path.to_string_lossy(),
-                "launched": result.launched,
+                "readyToInstall": true,
                 "progress": 100
             }),
         ),
@@ -1633,6 +1635,110 @@ pub async fn perform_update(release: Option<codexx_core::update::Release>) -> Co
             }),
         ),
     }
+}
+
+#[tauri::command]
+pub async fn apply_downloaded_update(
+    app: tauri::AppHandle,
+    installer_path: String,
+    force_codex_quit: Option<bool>,
+    debug_port: Option<u16>,
+) -> CommandResult<Value> {
+    let download_dir = codexx_core::paths::default_app_state_dir().join("updates");
+    let installer_path = match codexx_core::update::validate_downloaded_installer(
+        Path::new(&installer_path),
+        &download_dir,
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            return failed(
+                &format!("安装包校验失败：{error}"),
+                json!({ "readyToInstall": false, "launched": false }),
+            );
+        }
+    };
+
+    #[cfg(windows)]
+    if !codexx_core::watcher::find_codex_processes().is_empty() {
+        return failed(
+            "Codex 仍在运行，请保存工作并手动退出 Codex 后重试。",
+            json!({
+                "codexRunning": true,
+                "needsForceQuit": false,
+                "readyToInstall": true,
+                "launched": false,
+                "installedPath": installer_path.to_string_lossy()
+            }),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let debug_port = debug_port.unwrap_or_else(default_debug_port);
+        if !codexx_core::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty() {
+            let quit_result = if force_codex_quit.unwrap_or(false) {
+                codexx_core::update::force_quit_macos_codex(debug_port)
+            } else {
+                codexx_core::update::request_macos_codex_quit(debug_port)
+            };
+            if let Err(error) = quit_result {
+                return failed(
+                    &format!("退出 Codex 失败：{error}"),
+                    json!({
+                        "codexRunning": true,
+                        "needsForceQuit": !force_codex_quit.unwrap_or(false),
+                        "readyToInstall": true,
+                        "launched": false,
+                        "installedPath": installer_path.to_string_lossy()
+                    }),
+                );
+            }
+        }
+        if !codexx_core::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty() {
+            return failed(
+                "Codex 未能正常退出，是否强制关闭后继续安装？",
+                json!({
+                    "codexRunning": true,
+                    "needsForceQuit": true,
+                    "readyToInstall": true,
+                    "launched": false,
+                    "installedPath": installer_path.to_string_lossy()
+                }),
+            );
+        }
+    }
+
+    if let Err(error) = codexx_core::update::launch_installer(&installer_path) {
+        return failed(
+            &format!("启动安装包失败：{error}"),
+            json!({
+                "readyToInstall": true,
+                "launched": false,
+                "installedPath": installer_path.to_string_lossy()
+            }),
+        );
+    }
+
+    let app_to_exit = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        app_to_exit.exit(0);
+    });
+    ok(
+        if cfg!(target_os = "macos") {
+            "DMG 已挂载，CodexGO 即将退出。"
+        } else {
+            "安装程序已启动，CodexGO 即将退出。"
+        },
+        json!({
+            "codexRunning": false,
+            "needsForceQuit": false,
+            "readyToInstall": false,
+            "launched": true,
+            "installedPath": installer_path.to_string_lossy(),
+            "progress": 100
+        }),
+    )
 }
 
 #[tauri::command]
@@ -3301,8 +3407,8 @@ mod tests {
     }
 
     #[test]
-    fn update_install_requires_release_payload() {
-        let result = tauri::async_runtime::block_on(perform_update(None));
+    fn update_download_requires_release_payload() {
+        let result = tauri::async_runtime::block_on(download_update(None));
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("请先检查更新"));
