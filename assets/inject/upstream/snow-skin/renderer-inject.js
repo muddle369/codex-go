@@ -26,7 +26,7 @@
     if (window.__CODEX_DREAM_SKIN_DISABLED__) return;
     const root = document.documentElement;
     if (!root) return;
-    root.classList.add("codex-dream-skin");
+    if (!root.classList.contains("codex-dream-skin")) root.classList.add("codex-dream-skin");
     root.style.setProperty("--dream-art", `url("${artUrl}")`);
 
     let style = document.getElementById(STYLE_ID);

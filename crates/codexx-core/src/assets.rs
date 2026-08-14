@@ -286,6 +286,20 @@ mod tests {
     }
 
     #[test]
+    fn dream_skin_renderers_do_not_rewrite_existing_root_class() {
+        let renderers = [
+            include_str!("../../../assets/inject/upstream/dream-skin/macos/renderer-inject.js"),
+            include_str!("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js"),
+            include_str!("../../../assets/inject/upstream/cidala-tiger/macos/renderer-inject.js"),
+            include_str!("../../../assets/inject/upstream/cidala-tiger/windows/renderer-inject.js"),
+            include_str!("../../../assets/inject/upstream/snow-skin/renderer-inject.js"),
+        ];
+        for renderer in renderers {
+            assert!(!renderer.contains("\n    root.classList.add(\"codex-dream-skin\");"));
+        }
+    }
+
+    #[test]
     fn audio_transcription_injection_only_redirects_to_local_helper() {
         let script = audio_transcription_injection_script(58321);
 

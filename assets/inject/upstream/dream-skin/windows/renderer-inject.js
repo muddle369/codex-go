@@ -375,7 +375,7 @@
     }
     shellMain.classList.add("main-surface");
 
-    root.classList.add("codex-dream-skin");
+    if (!root.classList.contains("codex-dream-skin")) root.classList.add("codex-dream-skin");
     applyProfile(root);
 
     let style = document.getElementById(STYLE_ID);
