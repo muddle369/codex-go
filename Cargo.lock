@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "codexx-core"
-version = "1.3.2"
+version = "1.3.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "codexx-data"
-version = "1.3.2"
+version = "1.3.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "codexx-launcher"
-version = "1.3.2"
+version = "1.3.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "codexx-manager"
-version = "1.3.2"
+version = "1.3.3"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -209,7 +209,7 @@ fn injection_script_unlocks_nested_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(58321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"11\""));
     assert!(script.contains("if (name === \"openai-bundled\") return \"\""));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -221,7 +221,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(58321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"11\""));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     assert!(script.contains("source.includes(\"!u(e.marketplaceName)||e.marketplaceName===r\")"));
     assert!(script.contains("source.includes(\"!t.includes(e.name)\")"));
@@ -233,7 +233,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(58321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"10\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"11\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
     assert!(script.contains("Array.prototype.filter"));
@@ -458,9 +458,10 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("installCodexServiceTierDispatcherPatch"));
     assert!(script.contains("if (!codexPlusSettings().serviceTierControls) return;"));
     assert!(script.contains("codexServiceTierRequestOverrideRetryAt"));
-    assert!(script.contains("codexPluginMarketplaceUnlockRetryAt"));
+    assert!(script.contains("pluginMarketplaceRequestPatchMaxMisses"));
+    assert!(script.contains("codexAppModuleFailures"));
     assert!(script.contains("codexPatchFailureCooldownMs"));
-    assert!(!script.contains("codexServiceTierModulePromises.delete(namePart)"));
+    assert!(script.contains("codexServiceTierModulePromises.delete(namePart)"));
     assert!(script.contains("服务模式"));
     assert!(script.contains("data-codex-service-tier-status"));
     assert!(script.contains("data-codex-service-tier-inherit"));
@@ -979,6 +980,52 @@ fn pick_injectable_codex_page_target_requires_websocket() {
             .to_string()
             .contains("No injectable Codex page target found")
     );
+}
+
+#[test]
+fn pick_injectable_codex_page_target_prefers_exact_main_page() {
+    let targets = vec![
+        target(
+            "secondary",
+            "page",
+            "Codex",
+            "app://-/index.html?initialRoute=%2Fsettings",
+            Some("ws://secondary"),
+        ),
+        target(
+            "main",
+            "page",
+            "Codex",
+            "app://-/index.html",
+            Some("ws://main"),
+        ),
+    ];
+
+    let picked = pick_injectable_codex_page_target(&targets).expect("main page should be selected");
+
+    assert_eq!(picked.id, "main");
+}
+
+#[test]
+fn bridge_source_exposes_generation_and_periodic_runtime_guards() {
+    let source = include_str!("../src/bridge.rs");
+
+    assert!(source.contains("next_bridge_generation"));
+    assert!(source.contains("bridge_generation_is_current"));
+    assert!(source.contains("run_periodic_evaluations"));
+    assert!(source.contains("ensure_runtime_evaluate_succeeded"));
+}
+
+#[test]
+fn injection_script_uses_generic_app_server_discovery_and_electron_bridge() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("appServerFallbackAssetUrls"));
+    assert!(script.contains("loadAppServerRequestCandidates"));
+    assert!(script.contains("installPluginMarketplaceBridgePatch"));
+    assert!(script.contains("patchPluginMarketplaceResponseData"));
+    assert!(script.contains("window.electronBridge"));
+    assert!(!script.contains("app-server-manager-signals-C1h8B-R-.js"));
 }
 
 #[tokio::test]

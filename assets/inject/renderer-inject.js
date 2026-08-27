@@ -66,8 +66,8 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "3";
-  const codexAppServerModelRequestPatchVersion = "1";
-  const codexPluginMarketplaceUnlockVersion = "10";
+  const codexAppServerModelRequestPatchVersion = "2";
+  const codexPluginMarketplaceUnlockVersion = "11";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
   const codexThreadScrollRestoreWindowMs = 3200;
@@ -1285,6 +1285,9 @@
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
+  const codexAppModuleFailures = new Map();
+  const codexAppModuleRetryCooldownMs = 30_000;
+  const codexAppModuleMaxAttempts = 8;
   const codexPatchFailureCooldownMs = 60_000;
   const codexServiceTierSupportedFastModels = new Set([
     "gpt-5.4",
@@ -1296,25 +1299,167 @@
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
 
-  function codexAppAssetUrl(namePart) {
-    const urls = [
+  function uniqueCodexAppAssetUrls(urls) {
+    return Array.from(new Set((urls || []).filter((url) => typeof url === "string" && url.includes("/assets/") && url.split("?")[0].endsWith(".js"))));
+  }
+
+  function codexAppAssetCandidateUrls() {
+    return uniqueCodexAppAssetUrls([
       ...Array.from(document.scripts || []).map((script) => script.src),
       ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
       ...performance.getEntriesByType("resource").map((entry) => entry.name),
-    ].filter(Boolean);
-    return urls.find((url) => url.includes("/assets/") && url.includes(namePart) && url.split("?")[0].endsWith(".js")) || "";
+    ]);
+  }
+
+  function codexAppAssetUrl(namePart) {
+    if (!namePart) return "";
+    return codexAppAssetCandidateUrls().find((url) => url.includes(namePart)) || "";
+  }
+
+  async function codexAppAssetUrlFromScriptText(namePart) {
+    if (!namePart) return "";
+    const scripts = codexAppAssetCandidateUrls();
+    const escaped = String(namePart).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`["'](\\./(?:assets/)?${escaped}[^"']+\\.js)["']`),
+      new RegExp(`["'](\\.?/assets/${escaped}[^"']+\\.js)["']`),
+      new RegExp(`["']([^"']*/assets/${escaped}[^"']+\\.js)["']`),
+    ];
+    for (const src of scripts) {
+      try {
+        const text = await fetch(src).then((response) => response.ok ? response.text() : "");
+        if (!text) continue;
+        for (const pattern of patterns) {
+          const match = text.match(pattern);
+          if (match) return new URL(match[1], src).href;
+        }
+      } catch {
+      }
+    }
+    return "";
   }
 
   async function loadCodexAppModule(namePart) {
     if (!codexServiceTierModulePromises.has(namePart)) {
+      const failure = codexAppModuleFailures.get(namePart);
+      if (failure && (failure.attempts >= codexAppModuleMaxAttempts || Date.now() - failure.at < codexAppModuleRetryCooldownMs)) {
+        throw failure.error;
+      }
       const promise = Promise.resolve().then(async () => {
-        const url = codexAppAssetUrl(namePart);
+        const url = codexAppAssetUrl(namePart) || await codexAppAssetUrlFromScriptText(namePart);
         if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
         return await import(url);
+      }).then((module) => {
+        codexAppModuleFailures.delete(namePart);
+        return module;
+      }).catch((error) => {
+        codexServiceTierModulePromises.delete(namePart);
+        codexAppModuleFailures.set(namePart, {
+          at: Date.now(),
+          attempts: (codexAppModuleFailures.get(namePart)?.attempts || 0) + 1,
+          error,
+        });
+        throw error;
       });
       codexServiceTierModulePromises.set(namePart, promise);
     }
     return await codexServiceTierModulePromises.get(namePart);
+  }
+
+  async function loadOptionalCodexAppModule(namePart) {
+    try {
+      return await loadCodexAppModule(namePart);
+    } catch (error) {
+      const message = String(error?.message || error);
+      if (message.includes(`未找到 Codex App asset: ${namePart}`)) return null;
+      throw error;
+    }
+  }
+
+  function appServerFallbackAssetUrls() {
+    const preferred = codexAppAssetCandidateUrls().filter((url) => {
+      const name = (url.split("/").pop() || "").toLowerCase();
+      return /use-host-config|app-server-manager-signals|app-initial|app-main|page-|chatg|signals|server-manager|gwqc41kz|c1urrgy0|hsvsqcnf/.test(name);
+    });
+    preferred.sort((left, right) => {
+      const score = (url) => {
+        const name = (url.split("/").pop() || "").toLowerCase();
+        if (name.includes("use-host-config")) return 0;
+        if (name.includes("app-server-manager-signals")) return 1;
+        if (name.includes("gwqc41kz") || name.includes("c1urrgy0") || name.includes("hsvsqcnf")) return 2;
+        if (name.includes("app-initial") && name.includes("app-main")) return 3;
+        if (name.includes("app-main")) return 4;
+        return 5;
+      };
+      return score(left) - score(right) || right.length - left.length;
+    });
+    return preferred.slice(0, 16);
+  }
+
+  function collectAppServerRequestCandidatesFromModule(module) {
+    const candidates = [];
+    const seen = new Set();
+    const push = (value) => {
+      if (!value || typeof value !== "object" || seen.has(value)) return;
+      seen.add(value);
+      candidates.push(value);
+    };
+    for (const value of Object.values(module || {})) {
+      push(value);
+      if (!value || typeof value !== "object") continue;
+      if (typeof value.get === "function") {
+        try { push(value.get()); } catch {}
+        try { push(value.get("local")); } catch {}
+      }
+      try {
+        for (const nested of Object.values(value).slice(0, 100)) push(nested);
+      } catch {}
+    }
+    return candidates;
+  }
+
+  async function loadAppServerRequestModules() {
+    const modules = [];
+    const sources = [];
+    const seenModules = new Set();
+    const seenUrls = new Set();
+    const pushModule = (module, source) => {
+      if (!module || typeof module !== "object" || seenModules.has(module)) return;
+      seenModules.add(module);
+      modules.push(module);
+      sources.push(source);
+    };
+    for (const assetPrefix of ["use-host-config-", "app-server-manager-signals-"]) {
+      try {
+        const module = await loadOptionalCodexAppModule(assetPrefix);
+        if (module) pushModule(module, assetPrefix);
+      } catch {
+      }
+    }
+    for (const url of appServerFallbackAssetUrls()) {
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      try {
+        pushModule(await import(url), url);
+      } catch {
+      }
+    }
+    return { modules, sources };
+  }
+
+  async function loadAppServerRequestCandidates() {
+    const { modules, sources } = await loadAppServerRequestModules();
+    const candidates = [];
+    const seen = new Set();
+    for (const module of modules) {
+      for (const candidate of collectAppServerRequestCandidatesFromModule(module)) {
+        if (seen.has(candidate)) continue;
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    }
+    const usedFallback = sources.some((source) => !source.endsWith("-"));
+    return { modules, candidates, sources, discovery: usedFallback ? "fallback" : "named-assets" };
   }
 
   async function codexSettingStorageModule() {
@@ -2907,51 +3052,218 @@
     return true;
   }
 
+  function patchPluginMarketplaceRequestMessage(message) {
+    if (!message || typeof message !== "object") return message;
+    if (pluginPatchDisabledInRelayMode() || !codexPlusSettings().pluginMarketplaceUnlock) return message;
+    if (message.type === "fetch" && typeof message.url === "string") {
+      const requestMethod = appServerModelRequestMethod(message.url, message.body);
+      if (requestMethod !== "list-plugins" && requestMethod !== "install-plugin") return message;
+      let params = message.body;
+      if (typeof params === "string" && params.trim()) {
+        try {
+          params = JSON.parse(params);
+        } catch {
+          return message;
+        }
+      }
+      const requestParams = patchPluginMarketplaceRequestParams(
+        requestMethod,
+        restorePluginMarketplaceRequestParams(params, requestMethod),
+      );
+      if (requestMethod === "list-plugins" && message.requestId != null) {
+        window.__codexPluginMarketplaceFetchRequestIds = window.__codexPluginMarketplaceFetchRequestIds || new Set();
+        window.__codexPluginMarketplaceFetchRequestIds.add(String(message.requestId));
+      }
+      if (requestParams === params) return message;
+      return {
+        ...message,
+        body: typeof message.body === "string" ? JSON.stringify(requestParams) : requestParams,
+      };
+    }
+    if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
+      const requestMethod = appServerModelRequestMethod(String(message.request.method || ""), message.request.params);
+      if (requestMethod !== "list-plugins" && requestMethod !== "install-plugin") return message;
+      const requestParams = patchPluginMarketplaceRequestParams(
+        requestMethod,
+        restorePluginMarketplaceRequestParams(message.request.params, requestMethod),
+      );
+      if (requestMethod === "list-plugins" && message.request.id != null) {
+        window.__codexPluginMarketplaceRequestIds = window.__codexPluginMarketplaceRequestIds || new Set();
+        window.__codexPluginMarketplaceRequestIds.add(String(message.request.id));
+      }
+      if (requestParams === message.request.params) return message;
+      return { ...message, request: { ...message.request, params: requestParams } };
+    }
+    return message;
+  }
+
+  function patchPluginMarketplaceResponseData(data) {
+    if (!data || typeof data !== "object") return false;
+    if (data.type === "fetch-response") {
+      const requestId = data.requestId != null ? String(data.requestId) : "";
+      const requestIds = window.__codexPluginMarketplaceFetchRequestIds;
+      if (!(requestIds instanceof Set) || !requestIds.has(requestId)) return false;
+      requestIds.delete(requestId);
+      if (typeof data.bodyJsonString !== "string" || !data.bodyJsonString.trim()) return false;
+      try {
+        const response = JSON.parse(data.bodyJsonString);
+        patchPluginMarketplaceResult("list-plugins", response);
+        patchPluginMarketplaceResult("list-plugins", response?.data);
+        patchPluginMarketplaceResult("list-plugins", response?.result);
+        patchPluginMarketplaceResult("list-plugins", response?.result?.data);
+        data.bodyJsonString = JSON.stringify(response);
+        return true;
+      } catch (error) {
+        sendCodexPlusDiagnostic("plugin_marketplace_fetch_response_patch_failed", {
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+        return false;
+      }
+    }
+    if (data.type !== "mcp-response") return false;
+    const message = data.message || data.response;
+    const requestId = message?.id != null ? String(message.id) : "";
+    const requestIds = window.__codexPluginMarketplaceRequestIds;
+    if (!(requestIds instanceof Set) || !requestIds.has(requestId)) return false;
+    requestIds.delete(requestId);
+    patchPluginMarketplaceResult("list-plugins", message?.result);
+    patchPluginMarketplaceResult("list-plugins", message?.result?.data);
+    return true;
+  }
+
+  function installPluginMarketplaceBridgePatch() {
+    if (window.__codexPluginMarketplaceBridgePatch === codexPluginMarketplaceUnlockVersion) return;
+    if (pluginPatchDisabledInRelayMode()) return;
+    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
+    installPluginMarketplaceWindowEventPatchOnly();
+    const bridge = window.electronBridge;
+    if (!bridge || typeof bridge.sendMessageFromView !== "function") {
+      sendCodexPlusDiagnostic("plugin_marketplace_bridge_patch_not_found", {});
+      return;
+    }
+    if (!bridge.__codexPluginMarketplaceOriginalSendMessageFromView) {
+      bridge.__codexPluginMarketplaceOriginalSendMessageFromView = bridge.sendMessageFromView.bind(bridge);
+      bridge.sendMessageFromView = function patchedCodexPluginMarketplaceSendMessageFromView(message) {
+        let nextMessage = message;
+        try {
+          nextMessage = patchPluginMarketplaceRequestMessage(message);
+        } catch (error) {
+          sendCodexPlusDiagnostic("plugin_marketplace_bridge_request_patch_failed", {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          });
+        }
+        return bridge.__codexPluginMarketplaceOriginalSendMessageFromView(nextMessage);
+      };
+    }
+    bridge.__codexPluginMarketplaceBridgePatch = codexPluginMarketplaceUnlockVersion;
+    window.__codexPluginMarketplaceBridgePatch = codexPluginMarketplaceUnlockVersion;
+    sendCodexPlusDiagnostic("plugin_marketplace_bridge_patch_installed", {});
+  }
+
+  function installPluginMarketplaceWindowEventPatchOnly() {
+    if (window.__codexPluginMarketplaceWindowEventPatch === codexPluginMarketplaceUnlockVersion) return;
+    if (pluginPatchDisabledInRelayMode()) return;
+    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
+    const originalDispatchEvent = window.__codexPluginMarketplaceOriginalDispatchEvent || window.dispatchEvent;
+    if (!window.__codexPluginMarketplaceOriginalDispatchEvent) {
+      window.__codexPluginMarketplaceOriginalDispatchEvent = originalDispatchEvent;
+      window.dispatchEvent = function patchedCodexPluginMarketplaceDispatchEvent(event) {
+        try {
+          const detail = event?.detail;
+          if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request") {
+            const patched = patchPluginMarketplaceRequestMessage(detail);
+            if (patched !== detail) {
+              Object.keys(detail).forEach((key) => delete detail[key]);
+              Object.assign(detail, patched);
+            }
+          }
+          if (event?.type === "message") patchPluginMarketplaceResponseData(event.data);
+        } catch (error) {
+          sendCodexPlusDiagnostic("plugin_marketplace_dispatch_event_patch_failed", {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          });
+        }
+        return originalDispatchEvent.call(this, event);
+      };
+    }
+    if (!window.__codexPluginMarketplaceResponseListenerInstalled) {
+      window.__codexPluginMarketplaceResponseListenerInstalled = true;
+      window.addEventListener("message", (event) => {
+        try {
+          patchPluginMarketplaceResponseData(event?.data);
+        } catch (error) {
+          sendCodexPlusDiagnostic("plugin_marketplace_response_message_patch_failed", {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          });
+        }
+      }, true);
+    }
+    window.__codexPluginMarketplaceWindowEventPatch = codexPluginMarketplaceUnlockVersion;
+  }
+
+  const pluginMarketplaceRequestPatchMaxMisses = 8;
+  let pluginMarketplaceRequestPatchMissCount = 0;
+  let pluginMarketplaceRequestPatchDisabled = false;
+  let pluginMarketplaceRequestPatchPromise = null;
+
+  function notePluginMarketplaceRequestPatchMiss(event, detail) {
+    pluginMarketplaceRequestPatchMissCount += 1;
+    if (pluginMarketplaceRequestPatchMissCount === 1) {
+      sendCodexPlusDiagnostic(event, detail);
+    }
+    if (pluginMarketplaceRequestPatchMissCount >= pluginMarketplaceRequestPatchMaxMisses && !pluginMarketplaceRequestPatchDisabled) {
+      pluginMarketplaceRequestPatchDisabled = true;
+      sendCodexPlusDiagnostic("plugin_marketplace_request_patch_skipped", {
+        misses: pluginMarketplaceRequestPatchMissCount,
+        lastEvent: event,
+      });
+    }
+  }
+
   function installPluginMarketplaceRequestPatch() {
     if (window.__codexPluginMarketplaceUnlockInstalled === codexPluginMarketplaceUnlockVersion) return;
     if (pluginPatchDisabledInRelayMode()) return;
     if (!codexPlusSettings().pluginMarketplaceUnlock) return;
-    if (window.__codexPluginMarketplaceUnlockInFlight) return;
-    if (Date.now() < Number(window.__codexPluginMarketplaceUnlockRetryAt || 0)) return;
-    window.__codexPluginMarketplaceUnlockInFlight = true;
-    window.__codexPluginMarketplaceUnlockRetryAt = Date.now() + codexPatchFailureCooldownMs;
+    if (pluginMarketplaceRequestPatchDisabled || pluginMarketplaceRequestPatchPromise) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("app-server-manager-signals-");
-        const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+        const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
         let patchedCount = 0;
         for (const candidate of candidates) {
           if (patchPluginMarketplaceRequestClient(candidate)) patchedCount += 1;
-          if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
-            try {
-              if (patchPluginMarketplaceRequestClient(candidate.get())) patchedCount += 1;
-            } catch {
-            }
-          }
         }
         if (patchedCount > 0) {
           window.__codexPluginMarketplaceUnlockInstalled = codexPluginMarketplaceUnlockVersion;
-          window.__codexPluginMarketplaceUnlockRetryAt = 0;
+          pluginMarketplaceRequestPatchMissCount = 0;
           sendCodexPlusDiagnostic("plugin_marketplace_request_patch_installed", {
+            moduleCount: modules.length,
             candidateCount: candidates.length,
             patchedCount,
+            sources,
+            discovery,
           });
         } else {
-          sendCodexPlusDiagnostic("plugin_marketplace_request_patch_not_found", {
-            exportCount: Object.keys(module || {}).length,
+          notePluginMarketplaceRequestPatchMiss("plugin_marketplace_request_patch_not_found", {
+            moduleCount: modules.length,
             candidateCount: candidates.length,
+            sources,
+            discovery,
           });
         }
       } catch (error) {
-        sendCodexPlusDiagnostic("plugin_marketplace_request_patch_failed", {
+        notePluginMarketplaceRequestPatchMiss("plugin_marketplace_request_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         });
       } finally {
-        window.__codexPluginMarketplaceUnlockInFlight = false;
+        pluginMarketplaceRequestPatchPromise = null;
       }
     };
-    void patch();
+    pluginMarketplaceRequestPatchPromise = patch();
   }
 
   function reactFiberFrom(element) {
@@ -4573,50 +4885,69 @@
     return true;
   }
 
+  const appServerModelRequestPatchMaxMisses = 8;
+  let appServerModelRequestPatchMissCount = 0;
+  let appServerModelRequestPatchDisabled = false;
+  let appServerModelRequestPatchPromise = null;
+
+  function noteAppServerModelRequestPatchMiss(event, detail) {
+    appServerModelRequestPatchMissCount += 1;
+    if (appServerModelRequestPatchMissCount === 1) {
+      sendCodexPlusDiagnostic(event, detail);
+    }
+    if (appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses && !appServerModelRequestPatchDisabled) {
+      appServerModelRequestPatchDisabled = true;
+      sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
+        misses: appServerModelRequestPatchMissCount,
+        lastEvent: event,
+      });
+    }
+  }
+
   function installAppServerModelRequestPatch() {
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
-    if (window.__codexPlusAppServerModelRequestPatchInFlight) return;
-    if (Date.now() < Number(window.__codexPlusAppServerModelRequestPatchRetryAt || 0)) return;
-    window.__codexPlusAppServerModelRequestPatchInFlight = true;
+    if (appServerModelRequestPatchDisabled || appServerModelRequestPatchPromise) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("app-server-manager-signals-");
-        const candidates = Object.values(module).filter((value) => value && typeof value === "object");
+        const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
+        if (modules.length === 0) {
+          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_skipped", {
+            reason: "app_server_request_assets_missing",
+          });
+          return;
+        }
         let patchedCount = 0;
         for (const candidate of candidates) {
           if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
-          if (typeof candidate.sendRequest !== "function" && typeof candidate.get === "function") {
-            try {
-              if (patchAppServerModelRequestClient(candidate.get())) patchedCount += 1;
-            } catch {
-            }
-          }
         }
         if (patchedCount > 0) {
+          appServerModelRequestPatchMissCount = 0;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
-          window.__codexPlusAppServerModelRequestPatchRetryAt = 0;
           sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
+            moduleCount: modules.length,
             candidateCount: candidates.length,
             patchedCount,
+            sources,
+            discovery,
           });
         } else {
-          window.__codexPlusAppServerModelRequestPatchRetryAt = Date.now() + codexPatchFailureCooldownMs;
-          sendCodexPlusDiagnostic("model_app_server_request_patch_not_found", {
-            exportCount: Object.keys(module || {}).length,
+          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
+            moduleCount: modules.length,
             candidateCount: candidates.length,
+            sources,
+            discovery,
           });
         }
       } catch (error) {
-        window.__codexPlusAppServerModelRequestPatchRetryAt = Date.now() + codexPatchFailureCooldownMs;
-        sendCodexPlusDiagnostic("model_app_server_request_patch_failed", {
+        noteAppServerModelRequestPatchMiss("model_app_server_request_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         });
       } finally {
-        window.__codexPlusAppServerModelRequestPatchInFlight = false;
+        appServerModelRequestPatchPromise = null;
       }
     };
-    void patch();
+    appServerModelRequestPatchPromise = patch();
   }
 
   function ensureCodexModelWhitelistInstalls() {
@@ -5293,11 +5624,31 @@
 
   async function refreshRecentConversationsForHost() {
     try {
-      const signals = await import("./assets/app-server-manager-signals-C1h8B-R-.js");
-      if (typeof signals.rn === "function") await signals.rn("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
+      const { modules, candidates } = await loadAppServerRequestCandidates();
+      for (const module of modules) {
+        const sendRequest = Object.values(module || {}).find((candidate) => {
+          if (typeof candidate !== "function") return false;
+          try {
+            const source = Function.prototype.toString.call(candidate).replace(/\s+/g, "");
+            return source.includes(".sendRequest(");
+          } catch {
+            return false;
+          }
+        });
+        if (typeof sendRequest !== "function") continue;
+        await sendRequest("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
+        return true;
+      }
+      for (const candidate of candidates) {
+        if (typeof candidate?.sendRequest !== "function") continue;
+        await candidate.sendRequest("refresh-recent-conversations-for-host", { hostId: "local", sortKey: "updated_at" });
+        return true;
+      }
+      return false;
     } catch (error) {
       window.__codexProjectMoveRefreshFailures = window.__codexProjectMoveRefreshFailures || [];
       window.__codexProjectMoveRefreshFailures.push(String(error?.stack || error));
+      return false;
     }
   }
 
@@ -8296,6 +8647,8 @@
       }
       if ((pluginUnlockStrategy === "modern" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
         installPluginBuildFlavorFilterPatch();
+        installPluginMarketplaceBridgePatch();
+        installPluginMarketplaceWindowEventPatchOnly();
         installPluginMarketplaceRequestPatch();
       }
       unblockPluginInstallButtons();

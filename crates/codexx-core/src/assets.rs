@@ -317,8 +317,9 @@ mod tests {
     fn renderer_injection_throttles_failed_model_patch_and_avoids_duplicate_diagnostics() {
         let script = injection_script(58321);
 
-        assert!(script.contains("__codexPlusAppServerModelRequestPatchRetryAt"));
-        assert!(script.contains("__codexPlusAppServerModelRequestPatchInFlight"));
+        assert!(script.contains("appServerModelRequestPatchMaxMisses"));
+        assert!(script.contains("appServerModelRequestPatchPromise"));
+        assert!(script.contains("noteAppServerModelRequestPatchMiss"));
         assert!(script.contains("return window.__codexSessionDeleteBridge"));
     }
 

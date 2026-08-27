@@ -591,12 +591,23 @@ impl LaunchHooks for DefaultLaunchHooks {
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
+            let mut observed_browser_id: Option<String> = None;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
-                        let _ = check_and_reinject_bridge(debug_port, helper_port).await;
+                        let current_browser_id = match crate::cdp::browser_identity(debug_port).await {
+                            Ok(identity) => identity.browser_id().ok(),
+                            Err(_) => None,
+                        };
+                        let identity_changed = current_browser_id
+                            .as_deref()
+                            .is_some_and(|current| browser_identity_changed(observed_browser_id.as_deref(), current));
+                        if let Some(current) = current_browser_id {
+                            observed_browser_id = Some(current);
+                        }
+                        let _ = check_and_reinject_bridge_inner(debug_port, helper_port, identity_changed).await;
                     }
                 }
             }
@@ -2031,18 +2042,34 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
 }
 
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
-    let healthy = match bridge_health_ok(debug_port).await {
-        Ok(healthy) => healthy,
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "bridge.health_check_failed",
-                serde_json::json!({
-                    "debug_port": debug_port,
-                    "helper_port": helper_port,
-                    "message": error.to_string()
-                }),
-            );
-            false
+    check_and_reinject_bridge_inner(debug_port, helper_port, false).await
+}
+
+pub fn browser_identity_changed(previous: Option<&str>, current: &str) -> bool {
+    previous.is_some_and(|previous| previous != current)
+}
+
+async fn check_and_reinject_bridge_inner(
+    debug_port: u16,
+    helper_port: u16,
+    browser_identity_changed: bool,
+) -> bool {
+    let healthy = if browser_identity_changed {
+        false
+    } else {
+        match bridge_health_ok(debug_port).await {
+            Ok(healthy) => healthy,
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.health_check_failed",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "helper_port": helper_port,
+                        "message": error.to_string()
+                    }),
+                );
+                false
+            }
         }
     };
     if healthy {
@@ -2053,7 +2080,8 @@ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> boo
         "bridge.reinject_start",
         serde_json::json!({
             "debug_port": debug_port,
-            "helper_port": helper_port
+            "helper_port": helper_port,
+            "browser_identity_changed": browser_identity_changed
         }),
     );
     match retry_injection(debug_port, helper_port).await {
