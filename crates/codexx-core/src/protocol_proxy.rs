@@ -160,6 +160,8 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
     if let Some(input) = body.get("input") {
         append_responses_input(input, &mut messages);
     }
+    enforce_tool_call_pairing(&mut messages);
+    relocate_tool_output_images(&mut messages);
     normalize_chat_messages(&mut messages);
     let messages = collapse_system_messages_to_head(messages);
     result["messages"] = json!(messages);
@@ -1279,7 +1281,11 @@ fn upstream_request_parts(
         )),
         RelayProtocol::ChatCompletions => Ok((
             chat_completions_url(&relay.base_url),
-            responses_to_chat_completions(request_json)?,
+            {
+                let mut body = responses_to_chat_completions(request_json)?;
+                guard_inline_image_data_urls(&mut body);
+                body
+            },
             UpstreamWireApi::ChatCompletions,
         )),
     }
@@ -2432,7 +2438,7 @@ fn append_responses_item(
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": response_output_text(item.get("output").unwrap_or(&Value::Null))
+                "content": tool_output_content(item.get("output").unwrap_or(&Value::Null))
             }));
         }
         Some("custom_tool_call") => {
@@ -2478,7 +2484,7 @@ fn append_responses_item(
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": response_output_text(item.get("output").unwrap_or(&Value::Null))
+                "content": tool_output_content(item.get("output").unwrap_or(&Value::Null))
             }));
         }
         Some("tool_call") => {
@@ -2561,6 +2567,14 @@ fn append_responses_item(
 }
 
 fn orphan_tool_output_message(call_id: &str, output: &Value) -> Value {
+    if let Value::Array(parts) = tool_output_content(output) {
+        let mut content = vec![json!({
+            "type": "text",
+            "text": format!("Function call output ({call_id}):")
+        })];
+        content.extend(parts);
+        return json!({ "role": "user", "content": content });
+    }
     json!({
         "role": "user",
         "content": format!(
@@ -2568,6 +2582,157 @@ fn orphan_tool_output_message(call_id: &str, output: &Value) -> Value {
             response_output_text(output)
         )
     })
+}
+
+fn enforce_tool_call_pairing(messages: &mut [Value]) {
+    let mut index = 0;
+    while index < messages.len() {
+        if messages[index].get("role").and_then(Value::as_str) != Some("assistant") {
+            index += 1;
+            continue;
+        }
+        let Some(tool_calls) = messages[index].get("tool_calls").and_then(Value::as_array) else {
+            index += 1;
+            continue;
+        };
+        if tool_calls.is_empty() {
+            index += 1;
+            continue;
+        }
+        let mut answered = BTreeSet::new();
+        let mut followers = 0;
+        for message in messages[index + 1..]
+            .iter()
+            .take_while(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        {
+            followers += 1;
+            if let Some(id) = message.get("tool_call_id").and_then(Value::as_str) {
+                answered.insert(id.to_string());
+            }
+        }
+        if index + 1 + followers >= messages.len() {
+            index += 1;
+            continue;
+        }
+        let (kept, orphaned): (Vec<Value>, Vec<Value>) =
+            tool_calls.iter().cloned().partition(|tool_call| {
+                tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| answered.contains(id))
+            });
+        if orphaned.is_empty() {
+            index += 1;
+            continue;
+        }
+        let notes = orphaned
+            .iter()
+            .map(|tool_call| {
+                let name = tool_call
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let id = tool_call.get("id").and_then(Value::as_str).unwrap_or("");
+                format!("Abandoned function call ({id}): {name}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if kept.is_empty() {
+            if let Some(message) = messages[index].as_object_mut() {
+                message.remove("tool_calls");
+            }
+        } else {
+            messages[index]["tool_calls"] = json!(kept);
+        }
+        append_text_to_assistant_message(&mut messages[index], &notes);
+        index += 1;
+    }
+}
+
+fn relocate_tool_output_images(messages: &mut Vec<Value>) {
+    let mut index = 0;
+    while index < messages.len() {
+        if messages[index].get("role").and_then(Value::as_str) != Some("tool") {
+            index += 1;
+            continue;
+        }
+        let mut images = Vec::new();
+        let mut end = index;
+        while end < messages.len()
+            && messages[end].get("role").and_then(Value::as_str) == Some("tool")
+        {
+            take_images_from_tool_message(&mut messages[end], &mut images);
+            end += 1;
+        }
+        if !images.is_empty() {
+            let mut content = vec![json!({
+                "type": "text",
+                "text": "Images returned by the tool call(s) above:"
+            })];
+            content.extend(images);
+            messages.insert(end, json!({ "role": "user", "content": content }));
+            end += 1;
+        }
+        index = end;
+    }
+}
+
+fn append_text_to_assistant_message(message: &mut Value, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let existing = match message.get("content") {
+        Some(Value::String(content)) => content.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    };
+    message["content"] = if existing.trim().is_empty() {
+        json!(text)
+    } else {
+        json!(format!("{existing}\n{text}"))
+    };
+}
+
+fn take_images_from_tool_message(message: &mut Value, images: &mut Vec<Value>) {
+    let Some(parts) = message.get("content").and_then(Value::as_array) else {
+        return;
+    };
+    let mut texts = Vec::new();
+    let mut found = Vec::new();
+    for part in parts {
+        if is_image_part(part) {
+            if let Some(image) = image_part_to_chat(part) {
+                found.push(image);
+            }
+        } else if let Some(text) = part.get("text").and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            texts.push(text.to_string());
+        }
+    }
+    if found.is_empty() {
+        return;
+    }
+    let placeholder = if found.len() == 1 {
+        "[image]".to_string()
+    } else {
+        format!("[{} images]", found.len())
+    };
+    message["content"] = json!(if texts.is_empty() {
+        placeholder
+    } else {
+        format!("{}\n{placeholder}", texts.join("\n"))
+    });
+    images.extend(found);
 }
 
 fn normalize_chat_messages(messages: &mut [Value]) {
@@ -3947,6 +4112,110 @@ fn response_output_text(value: &Value) -> String {
         Value::String(text) => text.clone(),
         Value::Null => String::new(),
         other => canonical_json_string(other),
+    }
+}
+
+fn is_image_part(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("input_image" | "image_url")
+    )
+}
+
+fn image_part_to_chat(value: &Value) -> Option<Value> {
+    let image_url = value.get("image_url")?;
+    let image_url = if image_url.is_object() {
+        image_url.clone()
+    } else {
+        json!({ "url": image_url.as_str().unwrap_or_default() })
+    };
+    Some(json!({ "type": "image_url", "image_url": image_url }))
+}
+
+fn tool_output_content(output: &Value) -> Value {
+    let Some(parts) = output.as_array() else {
+        return json!(response_output_text(output));
+    };
+    if !parts.iter().any(is_image_part) {
+        return json!(response_output_text(output));
+    }
+    let mut chat_parts = Vec::new();
+    for part in parts {
+        if is_image_part(part) {
+            if let Some(image) = image_part_to_chat(part) {
+                chat_parts.push(image);
+            }
+            continue;
+        }
+        let text = match part.get("type").and_then(Value::as_str) {
+            Some("input_text") | Some("output_text") | Some("text") => part
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            _ => serde_json::to_string(part).unwrap_or_default(),
+        };
+        if !text.is_empty() {
+            chat_parts.push(json!({ "type": "text", "text": text }));
+        }
+    }
+    Value::Array(chat_parts)
+}
+
+const IMAGE_DATA_URL_PREFIX: &str = "data:image/";
+
+fn redact_image_data_urls(text: &str) -> Option<String> {
+    if !text.contains(IMAGE_DATA_URL_PREFIX) {
+        return None;
+    }
+    let mut output = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find(IMAGE_DATA_URL_PREFIX) {
+        output.push_str(&remaining[..start]);
+        output.push_str("[image omitted]");
+        let tail = &remaining[start..];
+        let end = tail
+            .find(|character: char| {
+                !(character.is_ascii_alphanumeric()
+                    || matches!(
+                        character,
+                        '+' | '/' | '=' | ':' | ';' | ',' | '.' | '-' | '_'
+                    ))
+            })
+            .unwrap_or(tail.len());
+        remaining = &tail[end..];
+    }
+    output.push_str(remaining);
+    Some(output)
+}
+
+fn guard_inline_image_data_urls(value: &mut Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut hit = false;
+            for (key, child) in map.iter_mut() {
+                if key == "image_url" {
+                    continue;
+                }
+                hit |= guard_inline_image_data_urls(child);
+            }
+            hit
+        }
+        Value::Array(items) => {
+            let mut hit = false;
+            for item in items {
+                hit |= guard_inline_image_data_urls(item);
+            }
+            hit
+        }
+        Value::String(text) => match redact_image_data_urls(text) {
+            Some(cleaned) => {
+                *text = cleaned;
+                true
+            }
+            None => false,
+        },
+        _ => false,
     }
 }
 

@@ -22,6 +22,7 @@ directories.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tauri = { version = "2", features = ["custom-protocol", "image-ico", "image-png", "tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"

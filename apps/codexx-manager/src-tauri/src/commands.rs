@@ -15,6 +15,7 @@ use codexx_core::user_scripts::UserScriptManager;
 use codexx_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use tauri::Manager;
 
@@ -154,6 +155,38 @@ pub struct LiveContextEntriesPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PluginMaintenancePayload {
+    pub report: codexx_core::plugin_maintenance::PluginMaintenanceReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpFormPayload {
+    pub form: codexx_core::mcp_config::McpServerForm,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTomlPayload {
+    pub toml_body: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportRequest {
+    pub settings: BackendSettings,
+    pub json: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportPreviewPayload {
+    pub entries: Vec<codexx_core::mcp_config::McpJsonEntry>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtractRelayCommonConfigPayload {
     pub common_config_contents: String,
     pub profile_config_contents: String,
@@ -281,11 +314,65 @@ pub struct ScriptMarketPayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SkillsPayload {
+    pub skills: Vec<codexx_core::skills::SkillEntry>,
+    pub repos: Vec<codexx_core::skills::SkillRepo>,
+    pub backups: Vec<codexx_core::skills::SkillBackup>,
+    pub repo_errors: Vec<String>,
+    pub skills_dir: String,
+    pub codex_skills_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartupPayload {
     pub show_update: bool,
     pub first_run: bool,
     pub launch_panel: bool,
     pub setup_completed: bool,
+}
+
+#[tauri::command]
+pub fn load_grok_config() -> CommandResult<codexx_core::grok_config::GrokConfigPayload> {
+    match codexx_core::grok_config::load_grok_config() {
+        Ok(payload) => ok("Grok 配置已加载。", payload),
+        Err(error) => failed(
+            &format!("读取 Grok 配置失败：{error}"),
+            empty_grok_config_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn save_grok_config(
+    request: codexx_core::grok_config::SaveGrokConfigRequest,
+) -> CommandResult<codexx_core::grok_config::SaveGrokConfigResult> {
+    let backup_root = codexx_core::paths::default_app_state_dir().join("backups");
+    match codexx_core::grok_config::save_grok_config(&request, &backup_root) {
+        Ok(payload) => ok("Grok 配置已保存。", payload),
+        Err(error) => failed(
+            &format!("保存 Grok 配置失败：{error}"),
+            codexx_core::grok_config::SaveGrokConfigResult {
+                config: empty_grok_config_payload(),
+                backup_path: None,
+            },
+        ),
+    }
+}
+
+fn empty_grok_config_payload() -> codexx_core::grok_config::GrokConfigPayload {
+    let home = codexx_core::grok_config::default_grok_home_dir();
+    codexx_core::grok_config::GrokConfigPayload {
+        grok_home: home.to_string_lossy().to_string(),
+        config_path: home.join("config.toml").to_string_lossy().to_string(),
+        config_exists: false,
+        cli_path: None,
+        cli_installed: false,
+        revision: String::new(),
+        default_model: String::new(),
+        models_base_url: String::new(),
+        models: Vec::new(),
+    }
 }
 
 #[tauri::command]
@@ -1122,7 +1209,13 @@ pub async fn refresh_theme_market() -> CommandResult<ThemeMarketPayload> {
     match reqwest::get(THEME_MARKET_INDEX_URL).await {
         Ok(response) => match response.error_for_status() {
             Ok(response) => match response.json::<Value>().await {
-                Ok(themes) => ok("主题市场已刷新。", payload(themes)),
+                Ok(themes) => match validate_theme_market(&themes) {
+                    Ok(()) => ok("主题市场已刷新。", payload(themes)),
+                    Err(error) => failed(
+                        &format!("主题市场清单校验失败：{error}"),
+                        payload(json!({ "themes": [] })),
+                    ),
+                },
                 Err(error) => failed(
                     &format!("主题市场清单解析失败：{error}"),
                     payload(json!({ "themes": [] })),
@@ -1149,7 +1242,15 @@ pub async fn install_theme(id: String) -> CommandResult<Value> {
     let index = match reqwest::get(THEME_MARKET_INDEX_URL).await {
         Ok(response) => match response.error_for_status() {
             Ok(response) => match response.json::<Value>().await {
-                Ok(value) => value,
+                Ok(value) => {
+                    if let Err(error) = validate_theme_market(&value) {
+                        return failed(
+                            &format!("主题市场清单校验失败：{error}"),
+                            json!({"installed": false}),
+                        );
+                    }
+                    value
+                }
                 Err(error) => {
                     return failed(
                         &format!("主题清单解析失败：{error}"),
@@ -1214,6 +1315,16 @@ pub async fn install_theme(id: String) -> CommandResult<Value> {
             );
         }
     };
+    if let Some(expected_hash) = theme
+        .get("theme_sha256")
+        .or_else(|| theme.get("themeSha256"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        if let Err(error) = verify_theme_hash(&body, expected_hash, "主题配置") {
+            return failed(&error, json!({"installed": false}));
+        }
+    }
     let theme_json: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {
@@ -1271,6 +1382,16 @@ pub async fn install_theme(id: String) -> CommandResult<Value> {
                 );
             }
         };
+        if let Some(expected_hash) = theme
+            .get("image_sha256")
+            .or_else(|| theme.get("imageSha256"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            if let Err(error) = verify_theme_hash(&image_bytes, expected_hash, "主题背景") {
+                return failed(&error, json!({"installed": false}));
+            }
+        }
         let extension = Path::new(image_url.split('?').next().unwrap_or(image_url))
             .extension()
             .and_then(|value| value.to_str())
@@ -1288,6 +1409,12 @@ pub async fn install_theme(id: String) -> CommandResult<Value> {
 
     let mut runtime_theme = theme_json.clone();
     if let Some(theme_object) = runtime_theme.as_object_mut() {
+        if let Some(version) = theme.get("version").and_then(Value::as_str) {
+            theme_object.insert("packageVersion".to_string(), json!(version));
+        }
+        if let Some(license) = theme.get("license").and_then(Value::as_str) {
+            theme_object.insert("packageLicense".to_string(), json!(license));
+        }
         if !theme_object.contains_key("schemaVersion")
             && let Some(schema_version) = theme_object.get("schema_version").cloned()
         {
@@ -1364,11 +1491,49 @@ pub async fn install_theme(id: String) -> CommandResult<Value> {
         json!({
             "installed": true,
             "id": id,
+            "version": theme.get("version").and_then(Value::as_str).unwrap_or(""),
             "path": theme_path.to_string_lossy(),
             "backgroundPath": background_path.map(|path| path.to_string_lossy().to_string()),
             "accent": settings.codex_app_dream_skin_accent,
         }),
     )
+}
+
+fn validate_theme_market(index: &Value) -> anyhow::Result<()> {
+    let themes = index
+        .get("themes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("缺少 themes 数组"))?;
+    if themes.len() > 200 {
+        anyhow::bail!("主题数量超过 200 个上限");
+    }
+    for theme in themes {
+        let id = theme.get("id").and_then(Value::as_str).unwrap_or_default();
+        if id.is_empty() || id.len() > 128 || id.contains('/') || id.contains('\\') {
+            anyhow::bail!("存在无效主题 id");
+        }
+        let theme_url = theme
+            .get("theme_url")
+            .or_else(|| theme.get("themeUrl"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !(theme_url.starts_with("https://") || theme_url.starts_with("http://")) {
+            anyhow::bail!("主题 {id} 的下载地址无效");
+        }
+    }
+    Ok(())
+}
+
+fn verify_theme_hash(bytes: &[u8], expected: &str, label: &str) -> Result<(), String> {
+    let expected = expected.trim().to_ascii_lowercase();
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("{label}哈希格式无效。"));
+    }
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != expected {
+        return Err(format!("{label}校验失败，文件可能已被替换。"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1507,6 +1672,284 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
             &format!("脚本删除失败：{error}"),
             fallback_settings_payload(),
         ),
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let repos = manager.list_repos();
+    let mut remote = Vec::new();
+    let mut repo_errors = Vec::new();
+
+    for repo in repos.iter().filter(|repo| repo.enabled) {
+        let cached = cached_repo_skills(&repo.key());
+        match codexx_core::skills::fetch_repo_skills(repo, &cached).await {
+            Ok(skills) => {
+                store_repo_skills(&repo.key(), &skills);
+                remote.extend(skills);
+            }
+            Err(error) => {
+                repo_errors.push(format!("{}/{}：{error}", repo.owner, repo.name));
+                // 拉不动就先用上一次的结果撑着，别让已知的 skill 从列表里消失
+                remote.extend(cached.into_values());
+            }
+        }
+    }
+
+    let message = if repo_errors.is_empty() {
+        "Skills 列表已刷新。".to_string()
+    } else {
+        format!("Skills 列表已刷新，{} 个仓库拉取失败。", repo_errors.len())
+    };
+    let payload = skills_payload(&manager, &remote, repo_errors);
+    if payload.repo_errors.is_empty() {
+        ok(&message, payload)
+    } else {
+        failed(&message, payload)
+    }
+}
+
+/// 只读本地状态，不联网。切到 Skills 页时先用它把已装的列出来。
+#[tauri::command]
+pub fn list_installed_skills() -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let remote = all_cached_repo_skills();
+    ok(
+        "已加载本地 Skills。",
+        skills_payload(&manager, &remote, Vec::new()),
+    )
+}
+
+#[tauri::command]
+pub async fn install_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
+    install_or_update_skill(&repo_key, &id, "Skill 已安装。", "安装 Skill 失败").await
+}
+
+#[tauri::command]
+pub async fn update_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
+    install_or_update_skill(&repo_key, &id, "Skill 已更新。", "更新 Skill 失败").await
+}
+
+async fn install_or_update_skill(
+    repo_key: &str,
+    id: &str,
+    success_message: &str,
+    failure_prefix: &str,
+) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let Some(repo) = codexx_core::skills::parse_repo_key(repo_key) else {
+        return failed(
+            &format!("{failure_prefix}：仓库标识无法解析（{repo_key}）。"),
+            current_skills_payload(&manager),
+        );
+    };
+
+    // 装之前重新拉一次树，拿到当前的 repo_path 和哈希，避免用陈旧缓存装错版本。
+    let cached = cached_repo_skills(repo_key);
+    let skills = match codexx_core::skills::fetch_repo_skills(&repo, &cached).await {
+        Ok(skills) => {
+            store_repo_skills(repo_key, &skills);
+            skills
+        }
+        Err(error) => {
+            return failed(
+                &format!("{failure_prefix}：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
+    };
+    let Some(skill) = skills.iter().find(|skill| skill.id == id) else {
+        return failed(
+            &format!("{failure_prefix}：仓库里没有找到 {id}。"),
+            current_skills_payload(&manager),
+        );
+    };
+
+    let zip = match codexx_core::skills::download_repo_zip(&repo).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return failed(
+                &format!("{failure_prefix}：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
+    };
+    match manager.install_from_zip(skill, &zip) {
+        Ok(_) => ok(success_message, current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("{failure_prefix}：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn set_skill_enabled(id: String, enabled: bool) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.set_enabled(id.trim(), enabled) {
+        Ok(()) => ok(
+            if enabled {
+                "Skill 已启用，下次对话生效。"
+            } else {
+                "Skill 已停用。"
+            },
+            current_skills_payload(&manager),
+        ),
+        Err(error) => failed(
+            &format!("Skill 启停失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn uninstall_skill(id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.uninstall(id.trim()) {
+        Ok(_) => ok(
+            "Skill 已卸载，源目录已备份，可随时恢复。",
+            current_skills_payload(&manager),
+        ),
+        Err(error) => failed(
+            &format!("卸载 Skill 失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn restore_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.restore_backup(backup_id.trim()) {
+        Ok(_) => ok("Skill 已从备份恢复。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("从备份恢复失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.delete_backup(backup_id.trim()) {
+        Ok(_) => ok("备份已删除。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("删除备份失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn upsert_skill_repo(repo: codexx_core::skills::SkillRepo) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.upsert_repo(repo) {
+        Ok(_) => ok("仓库源已保存。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("保存仓库源失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_skill_repo(key: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.delete_repo(key.trim()) {
+        Ok(_) => {
+            forget_repo_skills(key.trim());
+            ok("仓库源已删除。", current_skills_payload(&manager))
+        }
+        Err(error) => failed(
+            &format!("删除仓库源失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+fn skills_payload(
+    manager: &codexx_core::skills::SkillsManager,
+    remote: &[codexx_core::skills::RemoteSkill],
+    repo_errors: Vec<String>,
+) -> SkillsPayload {
+    SkillsPayload {
+        skills: manager.merge_entries(remote),
+        repos: manager.list_repos(),
+        backups: manager.list_backups(),
+        repo_errors,
+        skills_dir: manager.source_dir().to_string_lossy().to_string(),
+        codex_skills_dir: manager.linked_dir().to_string_lossy().to_string(),
+    }
+}
+
+fn current_skills_payload(manager: &codexx_core::skills::SkillsManager) -> SkillsPayload {
+    skills_payload(manager, &all_cached_repo_skills(), Vec::new())
+}
+
+fn default_skills_manager() -> codexx_core::skills::SkillsManager {
+    codexx_core::skills::SkillsManager::new(
+        codexx_core::paths::default_skills_source_dir(),
+        codexx_core::paths::default_skill_backups_dir(),
+        codexx_core::paths::default_skills_state_path(),
+        codexx_core::codex_home::default_codex_home_dir(),
+    )
+}
+
+/// 上一次成功拉取的远端清单，按仓库 key 存。
+///
+/// 两个用途：拉取时传给 `fetch_repo_skills` 跳过没变的 SKILL.md 请求；
+/// 以及在只读命令里还原出完整视图，不必每次都联网。进程内缓存，重启即失效。
+type RepoSkillCache = std::collections::HashMap<
+    String,
+    std::collections::BTreeMap<String, codexx_core::skills::RemoteSkill>,
+>;
+
+fn repo_skill_cache() -> &'static std::sync::Mutex<RepoSkillCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<RepoSkillCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(RepoSkillCache::new()))
+}
+
+fn cached_repo_skills(
+    repo_key: &str,
+) -> std::collections::BTreeMap<String, codexx_core::skills::RemoteSkill> {
+    repo_skill_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(repo_key).cloned())
+        .unwrap_or_default()
+}
+
+fn all_cached_repo_skills() -> Vec<codexx_core::skills::RemoteSkill> {
+    repo_skill_cache()
+        .lock()
+        .ok()
+        .map(|cache| {
+            cache
+                .values()
+                .flat_map(|skills| skills.values().cloned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn store_repo_skills(repo_key: &str, skills: &[codexx_core::skills::RemoteSkill]) {
+    if let Ok(mut cache) = repo_skill_cache().lock() {
+        cache.insert(
+            repo_key.to_string(),
+            skills
+                .iter()
+                .map(|skill| (skill.id.clone(), skill.clone()))
+                .collect(),
+        );
+    }
+}
+
+fn forget_repo_skills(repo_key: &str) {
+    if let Ok(mut cache) = repo_skill_cache().lock() {
+        cache.remove(repo_key);
     }
 }
 
@@ -2263,6 +2706,79 @@ pub fn read_live_context_entries() -> CommandResult<LiveContextEntriesPayload> {
 }
 
 #[tauri::command]
+pub fn inspect_plugin_configuration() -> CommandResult<PluginMaintenancePayload> {
+    let home = codexx_core::relay_config::default_codex_home_dir();
+    match codexx_core::plugin_maintenance::inspect_plugin_configuration(&home) {
+        Ok(report) => {
+            let status = if report.issues.is_empty() { "ok" } else { "failed" };
+            let message = if report.issues.is_empty() {
+                format!("插件配置正常，已检测 {} 个插件和 {} 个市场。", report.plugin_count, report.marketplace_count)
+            } else {
+                format!("检测到 {} 个插件配置问题。", report.issues.len())
+            };
+            CommandResult {
+                status: status.to_string(),
+                message,
+                payload: PluginMaintenancePayload { report },
+            }
+        }
+        Err(error) => CommandResult {
+            status: "failed".to_string(),
+            message: format!("检查插件配置失败：{error}"),
+            payload: PluginMaintenancePayload {
+                report: codexx_core::plugin_maintenance::PluginMaintenanceReport::default(),
+            },
+        },
+    }
+}
+
+#[tauri::command]
+pub fn repair_plugin_configuration() -> CommandResult<PluginMaintenancePayload> {
+    let home = codexx_core::relay_config::default_codex_home_dir();
+    match codexx_core::plugin_maintenance::repair_plugin_configuration(&home) {
+        Ok(report) => {
+            let status = if report.issues.is_empty() { "ok" } else { "failed" };
+            let message = if report.issues.is_empty() {
+                format!("插件配置已修复并创建备份：{}", report.backup_path.as_deref().unwrap_or("未知路径"))
+            } else {
+                format!("已完成安全修复，但仍有 {} 个问题需要手动处理。", report.issues.len())
+            };
+            CommandResult {
+                status: status.to_string(),
+                message,
+                payload: PluginMaintenancePayload { report },
+            }
+        }
+        Err(error) => CommandResult {
+            status: "failed".to_string(),
+            message: format!("修复插件配置失败：{error}"),
+            payload: PluginMaintenancePayload {
+                report: codexx_core::plugin_maintenance::PluginMaintenanceReport::default(),
+            },
+        },
+    }
+}
+
+#[tauri::command]
+pub fn restore_plugin_configuration_backup() -> CommandResult<PluginMaintenancePayload> {
+    let home = codexx_core::relay_config::default_codex_home_dir();
+    match codexx_core::plugin_maintenance::restore_latest_plugin_configuration_backup(&home) {
+        Ok(report) => CommandResult {
+            status: "ok".to_string(),
+            message: format!("已恢复插件配置备份：{}", report.backup_path.as_deref().unwrap_or("未知路径")),
+            payload: PluginMaintenancePayload { report },
+        },
+        Err(error) => CommandResult {
+            status: "failed".to_string(),
+            message: format!("恢复插件配置备份失败：{error}"),
+            payload: PluginMaintenancePayload {
+                report: codexx_core::plugin_maintenance::PluginMaintenanceReport::default(),
+            },
+        },
+    }
+}
+
+#[tauri::command]
 pub fn upsert_context_entry(request: ContextEntryRequest) -> CommandResult<ContextEntriesPayload> {
     let mut settings = request.settings;
     match codexx_core::relay_config::upsert_context_entry_in_common_config(
@@ -2283,6 +2799,116 @@ pub fn upsert_context_entry(request: ContextEntryRequest) -> CommandResult<Conte
             },
         ),
     }
+}
+
+#[tauri::command]
+pub fn parse_mcp_entry(toml_body: String) -> CommandResult<McpFormPayload> {
+    match codexx_core::mcp_config::parse_mcp_toml_body(&toml_body) {
+        Ok(form) => ok("已解析 MCP 配置。", McpFormPayload { form }),
+        Err(error) => failed(
+            &format!("解析 MCP 配置失败：{error}"),
+            McpFormPayload {
+                form: Default::default(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn build_mcp_entry(
+    form: codexx_core::mcp_config::McpServerForm,
+) -> CommandResult<McpTomlPayload> {
+    match codexx_core::mcp_config::build_mcp_toml_body(&form) {
+        Ok(toml_body) => ok("已生成 MCP 配置。", McpTomlPayload { toml_body }),
+        Err(error) => failed(
+            &format!("生成 MCP 配置失败：{error}"),
+            McpTomlPayload {
+                toml_body: String::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn preview_mcp_servers_json(json: String) -> CommandResult<McpImportPreviewPayload> {
+    match codexx_core::mcp_config::parse_mcp_servers_json(&json) {
+        Ok(import) => {
+            let message = if import.warnings.is_empty() {
+                format!("解析出 {} 个 MCP 服务器。", import.entries.len())
+            } else {
+                format!(
+                    "解析出 {} 个 MCP 服务器，{} 处需要注意。",
+                    import.entries.len(),
+                    import.warnings.len()
+                )
+            };
+            ok(
+                &message,
+                McpImportPreviewPayload {
+                    entries: import.entries,
+                    warnings: import.warnings,
+                },
+            )
+        }
+        Err(error) => failed(
+            &format!("解析 JSON 失败：{error}"),
+            McpImportPreviewPayload {
+                entries: Vec::new(),
+                warnings: Vec::new(),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn import_mcp_servers_json(request: McpImportRequest) -> CommandResult<ContextEntriesPayload> {
+    let mut settings = request.settings;
+    let import = match codexx_core::mcp_config::parse_mcp_servers_json(&request.json) {
+        Ok(import) => import,
+        Err(error) => {
+            return failed(
+                &format!("解析 JSON 失败：{error}"),
+                ContextEntriesPayload {
+                    settings,
+                    entries: empty_context_entries(),
+                },
+            );
+        }
+    };
+
+    let total = import.entries.len();
+    let mut common = settings.relay_context_config_contents.clone();
+    for entry in &import.entries {
+        match codexx_core::relay_config::upsert_context_entry_in_common_config(
+            &common,
+            "mcp",
+            &entry.id,
+            &entry.toml_body,
+        ) {
+            Ok(updated) => common = updated,
+            Err(error) => {
+                return failed(
+                    &format!("导入 {} 失败：{error}", entry.id),
+                    ContextEntriesPayload {
+                        settings,
+                        entries: empty_context_entries(),
+                    },
+                );
+            }
+        }
+    }
+
+    settings.relay_context_config_contents = common;
+    let mut result = list_context_entries(ContextSettingsRequest { settings });
+    result.message = if import.warnings.is_empty() {
+        format!("已导入 {total} 个 MCP 服务器。")
+    } else {
+        format!(
+            "已导入 {total} 个 MCP 服务器：{}",
+            import.warnings.join("；")
+        )
+    };
+    result
 }
 
 #[tauri::command]
@@ -2947,8 +3573,11 @@ fn filter_quick_profile_models(models: Vec<String>) -> Vec<String> {
     models
         .into_iter()
         .filter(|model| {
-            let normalized = model.to_lowercase();
-            normalized.contains("gpt") && !normalized.contains("image")
+            let normalized = model.trim().to_lowercase();
+            normalized.contains("gpt")
+                && !normalized.contains("image")
+                && normalized != "gpt-4o-mini-transcribe"
+                && normalized != "gpt-4o-transcribe"
         })
         .collect()
 }
@@ -3380,6 +4009,26 @@ mod tests {
             ["codexgo-manager.exe", "--show-update"],
             None
         ));
+    }
+
+    #[test]
+    fn theme_market_validation_requires_safe_download_urls() {
+        let valid = json!({
+            "themes": [{"id": "codexgo-blue", "theme_url": "https://example.com/theme.json"}]
+        });
+        assert!(validate_theme_market(&valid).is_ok());
+
+        let invalid = json!({
+            "themes": [{"id": "../theme", "theme_url": "file:///tmp/theme.json"}]
+        });
+        assert!(validate_theme_market(&invalid).is_err());
+    }
+
+    #[test]
+    fn theme_hash_validation_rejects_tampered_content() {
+        let expected = format!("{:x}", Sha256::digest(b"theme"));
+        assert!(verify_theme_hash(b"theme", &expected, "主题配置").is_ok());
+        assert!(verify_theme_hash(b"tampered", &expected, "主题配置").is_err());
     }
 
     #[test]
@@ -4048,5 +4697,18 @@ model_reasoning_effort = "high"
             settings.relay_profiles[1].audio_transcription_model,
             "whisper-custom"
         );
+    }
+
+    #[test]
+    fn quick_profile_model_filter_excludes_audio_transcription_models() {
+        let models = filter_quick_profile_models(vec![
+            "gpt-5.5".to_string(),
+            "gpt-4o-mini-transcribe".to_string(),
+            "GPT-4O-TRANSCRIBE".to_string(),
+            "gpt-image-1".to_string(),
+            "claude-4".to_string(),
+        ]);
+
+        assert_eq!(models, vec!["gpt-5.5"]);
     }
 }

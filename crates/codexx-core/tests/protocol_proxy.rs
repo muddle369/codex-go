@@ -81,6 +81,52 @@ fn responses_request_converts_to_chat_completions() {
 }
 
 #[test]
+fn responses_tool_images_stay_structured_and_outside_tool_content() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_image",
+                "name": "view_image",
+                "arguments": "{}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_image",
+                "output": [
+                    { "type": "input_image", "image_url": "data:image/png;base64,AAAA" },
+                    { "type": "output_text", "text": "preview" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let messages = converted["messages"].as_array().unwrap();
+    let tool = messages
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap();
+    assert!(tool["content"].is_string());
+    assert!(!tool["content"].as_str().unwrap().contains("data:image"));
+
+    let image_message = messages
+        .iter()
+        .find(|message| {
+            message["role"] == "user"
+                && message["content"]
+                    .as_array()
+                    .is_some_and(|parts| parts.iter().any(|part| part["type"] == "image_url"))
+        })
+        .unwrap();
+    assert_eq!(
+        image_message["content"][1]["image_url"]["url"],
+        "data:image/png;base64,AAAA"
+    );
+}
+
+#[test]
 fn responses_request_matches_ccs_reasoning_and_tool_choice_edges() {
     let non_reasoning = responses_to_chat_completions(json!({
         "model": "gpt-4o",

@@ -358,6 +358,21 @@ type LiveContextEntriesResult = CommandResult<{
   entries: CodexContextEntries;
 }>;
 
+type PluginMaintenanceReport = {
+  configPath: string;
+  configExists: boolean;
+  configValid: boolean;
+  pluginCount: number;
+  marketplaceCount: number;
+  enabledPluginCount: number;
+  issues: string[];
+  backupPath: string | null;
+};
+
+type PluginMaintenanceResult = CommandResult<{
+  report: PluginMaintenanceReport;
+}>;
+
 type ExtractRelayCommonConfigResult = CommandResult<{
   commonConfigContents: string;
   profileConfigContents: string;
@@ -515,9 +530,14 @@ type ThemeMarketResult = CommandResult<{
     themes?: Array<{
       id?: string;
       name?: string;
+      version?: string;
       author?: string;
       description?: string;
       license?: string;
+      theme_sha256?: string;
+      image_sha256?: string;
+      themeSha256?: string;
+      imageSha256?: string;
       preview_url?: string;
       previewUrl?: string;
       theme_url?: string;
@@ -579,7 +599,7 @@ type StartupResult = CommandResult<{
   setupCompleted: boolean;
 }>;
 
-type Route = "overview" | "relay" | "sessions" | "context" | "enhance" | "themes" | "userScripts" | "zedRemote" | "maintenance" | "about" | "settings";
+type Route = "quickLaunch" | "overview" | "relay" | "sessions" | "context" | "enhance" | "themes" | "userScripts" | "zedRemote" | "maintenance" | "about" | "settings";
 type NavRoute = Route | "quickLaunch";
 type Theme = "dark" | "light";
 
@@ -721,7 +741,6 @@ export function App() {
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [startup, setStartup] = useState<StartupResult | null>(null);
-  const [launchPanelVisible, setLaunchPanelVisible] = useState(false);
   const [autoLaunchSeconds, setAutoLaunchSeconds] = useState<number | null>(null);
   const [quickToken, setQuickToken] = useState("");
   const [quickMode, setQuickMode] = useState<QuickConfigMode>("pureApi");
@@ -1014,6 +1033,14 @@ export function App() {
 
   const navigate = async (next: Route) => {
     setRoute(next);
+    if (next === "quickLaunch") {
+      autoLaunchSuppressedRef.current = true;
+      autoLaunchTriggeredRef.current = false;
+      launchInProgressRef.current = false;
+      setAutoLaunchSeconds(null);
+      await refreshOverview(true);
+      await refreshSettings(true);
+    }
     if (next === "overview") await refreshOverview(true);
     if (next === "relay") {
       await refreshSettings(true);
@@ -1055,16 +1082,6 @@ export function App() {
     }
   };
 
-  const openQuickLaunchFromConsole = async () => {
-    autoLaunchSuppressedRef.current = true;
-    autoLaunchTriggeredRef.current = false;
-    launchInProgressRef.current = false;
-    setAutoLaunchSeconds(null);
-    await refreshOverview(true);
-    await refreshSettings(true);
-    setLaunchPanelVisible(true);
-  };
-
   const launch = async () => {
     const result = await launchCommand("launch_codex_plus");
     if (result) {
@@ -1087,7 +1104,6 @@ export function App() {
     showNotice("Codex 已启动", `${BRAND.productName} 将隐藏到${place}，${reopen}`, "ok");
     launchInProgressRef.current = false;
     window.setTimeout(() => {
-      setLaunchPanelVisible(false);
       setRoute("overview");
       void call<CommandResult<Record<string, unknown>>>("hide_main_window").catch((error) => {
         console.warn("hide_main_window failed", error);
@@ -1115,13 +1131,6 @@ export function App() {
     launchInProgressRef.current = false;
     showNotice("启动 Codex", result.message, result.status);
     await refreshOverview(true);
-  };
-
-  const openMaintenanceFromPanel = () => {
-    setAutoLaunchSeconds(null);
-    autoLaunchSuppressedRef.current = false;
-    setLaunchPanelVisible(false);
-    setRoute(startup?.setupCompleted ? "overview" : "settings");
   };
 
   const handleRelaySwitchPayload = async (result: RelaySwitchResult) => {
@@ -1793,7 +1802,7 @@ export function App() {
       const startupResult = await run(() => call<StartupResult>("startup_options"));
       if (startupResult) {
         setStartup(startupResult);
-        setLaunchPanelVisible(startupResult.launchPanel);
+        if (startupResult.launchPanel) setRoute("quickLaunch");
         setAutoLaunchSeconds(null);
         autoLaunchSuppressedRef.current = false;
       }
@@ -1821,7 +1830,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!launchPanelVisible) return;
+    if (route !== "quickLaunch") return;
     if (!settings) return;
     setLaunchProfileId((current) => {
       const nextDefault = defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true);
@@ -1830,10 +1839,10 @@ export function App() {
       if (current === defaultSettings.activeRelayId && nextDefault !== current) return nextDefault;
       return current;
     });
-  }, [launchPanelVisible, settings, settingsForm, startup?.setupCompleted]);
+  }, [route, settings, settingsForm, startup?.setupCompleted]);
 
   useEffect(() => {
-    if (!launchPanelVisible) return;
+    if (route !== "quickLaunch") return;
     if (launchInProgressRef.current) return;
     const onlyDefaultProfile = hasOnlyDefaultRelayProfile(settingsForm);
     const selectedProfileId = launchProfileId || defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true);
@@ -1851,10 +1860,10 @@ export function App() {
         setQuickToken(configuredToken);
       }
     }
-  }, [launchPanelVisible, launchProfileId, settingsForm, settingsForm.relayProfiles, startup?.setupCompleted]);
+  }, [route, launchProfileId, settingsForm, settingsForm.relayProfiles, startup?.setupCompleted]);
 
   useEffect(() => {
-    if (!launchPanelVisible || autoLaunchSuppressedRef.current) return;
+    if (route !== "quickLaunch" || autoLaunchSuppressedRef.current) return;
     if (launchInProgressRef.current) return;
     const onlyDefaultProfile = hasOnlyDefaultRelayProfile(settingsForm);
     const selectedProfileId = launchProfileId || defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true);
@@ -1873,10 +1882,10 @@ export function App() {
     if (!quickLaunchConfigured && autoLaunchSeconds != null) {
       setAutoLaunchSeconds(null);
     }
-  }, [launchPanelVisible, launchProfileId, settingsForm, settingsForm.relayProfiles, startup?.setupCompleted, autoLaunchSeconds, quickToken]);
+  }, [route, launchProfileId, settingsForm, settingsForm.relayProfiles, startup?.setupCompleted, autoLaunchSeconds, quickToken]);
 
   useEffect(() => {
-    if (!launchPanelVisible || autoLaunchSeconds == null) return;
+    if (route !== "quickLaunch" || autoLaunchSeconds == null) return;
     if (autoLaunchSeconds <= 0) {
       if (!autoLaunchTriggeredRef.current) {
         autoLaunchTriggeredRef.current = true;
@@ -1886,7 +1895,7 @@ export function App() {
     }
     const timer = window.setTimeout(() => setAutoLaunchSeconds((current) => (current == null ? null : Math.max(0, current - 1))), 1000);
     return () => window.clearTimeout(timer);
-  }, [launchPanelVisible, autoLaunchSeconds]);
+  }, [route, autoLaunchSeconds]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -1912,7 +1921,6 @@ export function App() {
       refreshCurrent: () => navigate(route),
       launch,
       startCodexFromPanel,
-      openMaintenanceFromPanel,
       restart,
       repairBackend,
       installEntrypoints,
@@ -2018,6 +2026,12 @@ export function App() {
       refreshEnvConflicts,
       removeEnvConflicts,
       refreshLiveContextEntries,
+      inspectPluginConfiguration: async () =>
+        run(() => call<PluginMaintenanceResult>("inspect_plugin_configuration")),
+      repairPluginConfiguration: async () =>
+        run(() => call<PluginMaintenanceResult>("repair_plugin_configuration")),
+      restorePluginConfigurationBackup: async () =>
+        run(() => call<PluginMaintenanceResult>("restore_plugin_configuration_backup")),
       syncLiveContextEntries,
       refreshScriptMarket,
       refreshThemeMarket,
@@ -2077,36 +2091,6 @@ export function App() {
   );
   const hasUpdate = update?.updateAvailable === true;
 
-  if (launchPanelVisible) {
-    return (
-      <LaunchPanel
-        autoLaunchSeconds={autoLaunchSeconds}
-        overview={overview}
-        settings={settingsForm}
-        setupCompleted={startup?.setupCompleted === true}
-      theme={theme}
-      quickToken={quickToken}
-      quickTokenVisible={quickTokenVisible}
-      onToggleQuickTokenVisible={() => setQuickTokenVisible((current) => !current)}
-      quickMode={quickMode}
-        selectedProfileId={launchProfileId || defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true)}
-        quickConfigBusy={quickConfigBusy}
-        onCancelAutoLaunch={() => {
-          autoLaunchSuppressedRef.current = true;
-          setAutoLaunchSeconds(null);
-        }}
-        onQuickTokenChange={setQuickToken}
-        onQuickModeChange={setQuickMode}
-        onSelectedProfileChange={(profileId) => {
-          setAutoLaunchSeconds(null);
-          setLaunchProfileId(profileId);
-        }}
-        onLaunch={() => void startCodexFromPanel()}
-        onMaintenance={openMaintenanceFromPanel}
-      />
-    );
-  }
-
   return (
     <div className={`shell ${theme}`}>
       <aside className="sidebar">
@@ -2139,10 +2123,6 @@ export function App() {
               className={`nav-item ${route === item.id ? "active" : ""}`}
               key={item.id}
               onClick={() => {
-                if (item.id === "quickLaunch") {
-                  void openQuickLaunchFromConsole();
-                  return;
-                }
                 void navigate(item.id);
               }}
               title={item.label}
@@ -2186,6 +2166,32 @@ export function App() {
             <OverviewScreen
               overview={overview}
               actions={actions}
+            />
+          ) : null}
+          {route === "quickLaunch" ? (
+            <LaunchPanel
+              autoLaunchSeconds={autoLaunchSeconds}
+              overview={overview}
+              settings={settingsForm}
+              setupCompleted={startup?.setupCompleted === true}
+              theme={theme}
+              quickToken={quickToken}
+              quickTokenVisible={quickTokenVisible}
+              onToggleQuickTokenVisible={() => setQuickTokenVisible((current) => !current)}
+              quickMode={quickMode}
+              selectedProfileId={launchProfileId || defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true)}
+              quickConfigBusy={quickConfigBusy}
+              onCancelAutoLaunch={() => {
+                autoLaunchSuppressedRef.current = true;
+                setAutoLaunchSeconds(null);
+              }}
+              onQuickTokenChange={setQuickToken}
+              onQuickModeChange={setQuickMode}
+              onSelectedProfileChange={(profileId) => {
+                setAutoLaunchSeconds(null);
+                setLaunchProfileId(profileId);
+              }}
+              onLaunch={() => void startCodexFromPanel()}
             />
           ) : null}
           {route === "relay" ? (
@@ -2275,7 +2281,6 @@ function LaunchPanel({
   onQuickModeChange,
   onSelectedProfileChange,
   onLaunch,
-  onMaintenance,
 }: {
   autoLaunchSeconds: number | null;
   overview: OverviewResult | null;
@@ -2293,7 +2298,6 @@ function LaunchPanel({
   onQuickModeChange: (value: QuickConfigMode) => void;
   onSelectedProfileChange: (value: string) => void;
   onLaunch: () => void;
-  onMaintenance: () => void;
 }) {
   const codexPath = overview?.codex_app?.path || "自动探测 Codex App";
   const profiles = settings.relayProfiles.filter((profile) => !isAggregateRelayProfile(profile));
@@ -2311,12 +2315,9 @@ function LaunchPanel({
   const quickLaunchConfigured = onlyDefaultProfile
     ? quickToken.trim().length > 0
     : quickToken.trim().length > 0 || quickProfileConfigured;
-  const buttonLabel = autoLaunchSeconds != null
-    ? `${autoLaunchSeconds}秒后以所选配置启动Codex`
-    : "启动Codex";
   const canLaunch = !quickConfigBusy && (!showQuickConfig || quickLaunchConfigured);
   return (
-    <div className={`launch-shell ${theme}`}>
+    <div className={`launch-shell ${theme} quick-launch-shell`}>
       <section className="launch-card">
         <div className="launch-brand">
           <div className="brand-mark brand-mark-image">
@@ -2368,7 +2369,7 @@ function LaunchPanel({
           </div>
           {quickConfigBusy ? <p className="launch-config-busy">正在保存并应用快捷配置…</p> : null}
         </div>
-        <div className="launch-operation-card">
+        <div className={`launch-operation-card ${showQuickConfig ? "" : "launch-operation-card-single"}`}>
           {showQuickConfig ? (
             <div className="launch-mode-section">
               <span className="launch-mode-label">启动模式</span>
@@ -2393,21 +2394,18 @@ function LaunchPanel({
             </div>
           ) : null}
           <div className="launch-action-primary-wrap">
-            <Button disabled={!canLaunch} className="launch-action-button launch-action-button-primary" onClick={onLaunch}>
-              <span className="launch-action-button-main">
-                <Rocket className="h-4 w-4" />
-                <span>{buttonLabel}</span>
-              </span>
-              {showQuickConfig && quickLaunchConfigured && autoLaunchSeconds != null ? (
-                <div className="launch-action-button-bottom">
-                  <span className="launch-action-button-progress" aria-hidden="true">
-                    <span
+            {showQuickConfig && quickLaunchConfigured && autoLaunchSeconds != null ? (
+              <div className="launch-action-countdown">
+                <span className="launch-action-countdown-label">{`${autoLaunchSeconds}秒后以所选配置启动Codex`}</span>
+                <div className="launch-action-countdown-row">
+                  <div className="launch-action-button-progress" aria-hidden="true">
+                    <div
                       className="launch-action-button-progress-fill"
                       style={{
                         width: `${Math.max(0, Math.min(100, ((AUTO_LAUNCH_SECONDS - autoLaunchSeconds) / AUTO_LAUNCH_SECONDS) * 100))}%`,
                       }}
                     />
-                  </span>
+                  </div>
                   <span
                     className="launch-action-button-cancel"
                     role="button"
@@ -2428,16 +2426,15 @@ function LaunchPanel({
                     ×
                   </span>
                 </div>
-              ) : null}
+              </div>
+            ) : null}
+            <Button disabled={!canLaunch} className="launch-action-button launch-action-button-primary" onClick={onLaunch}>
+              <span className="launch-action-button-main">
+                <Rocket className="h-4 w-4" />
+                <span>启动Codex</span>
+              </span>
             </Button>
           </div>
-        </div>
-        <div className="launch-maintenance-row">
-          <Button className="launch-maintenance-button" onClick={onMaintenance} variant={setupCompleted ? "outline" : "default"} size="sm">
-            <Wrench className="h-4 w-4" />
-            高级配置
-          </Button>
-          <p className="launch-hint">更改 Codex 路径、完整供应商、启动参数、更新或日志。</p>
         </div>
       </section>
     </div>
@@ -2448,7 +2445,6 @@ type Actions = {
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
   startCodexFromPanel: () => Promise<void>;
-  openMaintenanceFromPanel: () => void;
   restart: () => Promise<void>;
   repairBackend: () => Promise<void>;
   installEntrypoints: () => Promise<void>;
@@ -2476,6 +2472,9 @@ type Actions = {
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
+  inspectPluginConfiguration: () => Promise<PluginMaintenanceResult | null>;
+  repairPluginConfiguration: () => Promise<PluginMaintenanceResult | null>;
+  restorePluginConfigurationBackup: () => Promise<PluginMaintenanceResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshScriptMarket: () => Promise<void>;
   refreshThemeMarket: () => Promise<void>;
@@ -2779,6 +2778,9 @@ function ThemeScreen({
   const configuredThemeId = typeof form.codexAppDreamSkinThemeConfig?.id === "string"
     ? form.codexAppDreamSkinThemeConfig.id
     : "";
+  const configuredThemeVersion = typeof form.codexAppDreamSkinThemeConfig?.packageVersion === "string"
+    ? form.codexAppDreamSkinThemeConfig.packageVersion
+    : "";
   const installTheme = async (id: string) => {
     if (!id || installingThemeId) return;
     setInstallingThemeId(id);
@@ -2824,6 +2826,8 @@ function ThemeScreen({
                 const id = theme.id || "";
                 const name = theme.name || id || "未命名主题";
                 const active = form.codexAppDreamSkinEnabled && (configuredThemeId === id || (!configuredThemeId && form.codexAppDreamSkinTheme === name));
+                const version = theme.version || "";
+                const updateAvailable = active && Boolean(version && configuredThemeVersion && version !== configuredThemeVersion);
                 const previewUrl = theme.preview_url || theme.previewUrl || "";
                 return (
                   <article className="theme-market-card" data-active={active} key={id || name}>
@@ -2832,10 +2836,10 @@ function ThemeScreen({
                       {active ? <div className="theme-market-active"><CheckCircle2 className="h-4 w-4" /><span>当前使用</span></div> : null}
                     </div>
                     <div className="theme-market-body">
-                      <div className="theme-market-heading"><div><strong>{name}</strong><small>{theme.author || "CodexGO 社区"}</small></div>{theme.license ? <UiBadge variant="outline">{theme.license}</UiBadge> : null}</div>
+                      <div className="theme-market-heading"><div><strong>{name}</strong><small>{theme.author || "CodexGO 社区"}{version ? ` · v${version}` : ""}</small></div>{theme.license ? <UiBadge variant="outline">{theme.license}</UiBadge> : null}</div>
                       <p>{theme.description || "CodexGO 社区主题"}</p>
-                      <Button disabled={!id || active || Boolean(installingThemeId)} onClick={() => void installTheme(id)} variant={active ? "secondary" : "outline"}>
-                        {installingThemeId === id ? <><RefreshCw className="h-4 w-4 animate-spin" />正在安装并应用…</> : active ? <><CheckCircle2 className="h-4 w-4" />当前使用</> : "安装并应用"}
+                      <Button disabled={!id || (active && !updateAvailable) || Boolean(installingThemeId)} onClick={() => void installTheme(id)} variant={active ? "secondary" : "outline"}>
+                        {installingThemeId === id ? <><RefreshCw className="h-4 w-4 animate-spin" />正在安装并应用…</> : updateAvailable ? "更新并应用" : active ? <><CheckCircle2 className="h-4 w-4" />当前使用</> : "安装并应用"}
                       </Button>
                     </div>
                   </article>
@@ -4419,8 +4423,58 @@ function RelayContextManager({
   const entries = contextEntriesWithLiveEntries(form, liveEntries);
   const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
   const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
+  const [maintenanceReport, setMaintenanceReport] = useState<PluginMaintenanceReport | null>(null);
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const visibleEntries = contextEntriesByKind(entries, activeKind);
   const label = contextKindLabel(activeKind);
+
+  const inspectPlugins = async () => {
+    setMaintenanceBusy(true);
+    try {
+      const result = await actions.inspectPluginConfiguration();
+      if (result) {
+        setMaintenanceReport(result.report);
+        actions.showMessage("插件配置检查", result.message, result.status);
+      }
+    } finally {
+      setMaintenanceBusy(false);
+    }
+  };
+
+  const repairPlugins = async () => {
+    const confirmed = window.confirm("修复前会自动备份当前 config.toml，只规范化配置格式和检查到的路径，不会删除你的插件。是否继续？");
+    if (!confirmed) return;
+    setMaintenanceBusy(true);
+    try {
+      const result = await actions.repairPluginConfiguration();
+      if (result) {
+        setMaintenanceReport(result.report);
+        actions.showMessage("插件配置修复", result.message, result.status);
+        if (result.report.backupPath) await actions.refreshRelayFiles();
+      }
+    } finally {
+      setMaintenanceBusy(false);
+    }
+  };
+
+  const restorePlugins = async () => {
+    const confirmed = window.confirm("将恢复最近一次 CodexGO 创建的 config.toml 备份，并先备份当前配置。是否继续？");
+    if (!confirmed) return;
+    setMaintenanceBusy(true);
+    try {
+      const result = await actions.restorePluginConfigurationBackup();
+      if (result) {
+        setMaintenanceReport(result.report);
+        actions.showMessage("插件配置恢复", result.message, result.status);
+        if (isSuccessStatus(result.status)) {
+          await actions.refreshLiveContextEntries();
+          await actions.refreshRelayFiles();
+        }
+      }
+    } finally {
+      setMaintenanceBusy(false);
+    }
+  };
 
   const saveEntry = async (kind: ContextKind, id: string, tomlBody: string) => {
     const next = await actions.upsertContextEntry(form, kind, id, tomlBody);
@@ -4454,12 +4508,42 @@ function RelayContextManager({
           <span>MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。</span>
         </div>
         <div className="relay-context-head-actions">
+          <Button disabled={maintenanceBusy} onClick={() => void inspectPlugins()} size="sm" variant="outline">
+            <ShieldCheck className={`h-4 w-4 ${maintenanceBusy ? "animate-pulse" : ""}`} />
+            检查插件配置
+          </Button>
+          <Button disabled={maintenanceBusy} onClick={() => void repairPlugins()} size="sm" variant="secondary">
+            <Wrench className={`h-4 w-4 ${maintenanceBusy ? "animate-spin" : ""}`} />
+            {maintenanceBusy ? "处理中…" : "修复插件配置"}
+          </Button>
+          <Button disabled={maintenanceBusy} onClick={() => void restorePlugins()} size="sm" variant="outline">
+            <RefreshCw className="h-4 w-4" />
+            恢复最近备份
+          </Button>
           <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
             <Plus className="h-4 w-4" />
             新增{label}
           </Button>
         </div>
       </div>
+      {maintenanceReport ? (
+        <div className={`relay-plugin-maintenance ${maintenanceReport.issues.length ? "has-issues" : "healthy"}`}>
+          <div className="relay-plugin-maintenance-summary">
+            <strong>{maintenanceReport.issues.length ? "插件配置需要注意" : "插件配置正常"}</strong>
+            <span>
+              {maintenanceReport.pluginCount} 个插件 · {maintenanceReport.enabledPluginCount} 个启用 · {maintenanceReport.marketplaceCount} 个市场
+            </span>
+          </div>
+          {maintenanceReport.issues.length ? (
+            <ul>
+              {maintenanceReport.issues.map((issue) => <li key={issue}>{issue}</li>)}
+            </ul>
+          ) : (
+            <span className="relay-plugin-maintenance-note">未修改供应商配置，也未内置或覆盖任何插件文件。</span>
+          )}
+          {maintenanceReport.backupPath ? <small>备份：{maintenanceReport.backupPath}</small> : null}
+        </div>
+      ) : null}
       <div className="segmented">
         {contextKindOptions.map((option) => (
           <button
@@ -4936,6 +5020,7 @@ function routeTitle(route: Route) {
 
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
+    quickLaunch: "快速选择配置、启动模式并启动Codex",
     overview: "检查问题、启动与快速修复",
     relay: "管理 API 供应商、协议、Key 与配置文件",
     sessions: "查看、删除和修复 Codex 本地会话",

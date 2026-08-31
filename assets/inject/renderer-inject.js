@@ -782,6 +782,92 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
+      #${codexPlusMenuId}.codex-plus-composer-menu {
+        position: fixed !important;
+        left: var(--codex-plus-composer-menu-left, 50%) !important;
+        right: auto !important;
+        top: var(--codex-plus-composer-menu-top, auto) !important;
+        bottom: auto !important;
+        transform: translateX(-50%) !important;
+        z-index: 2147483645 !important;
+        display: inline-flex !important;
+        width: max-content !important;
+        height: 28px !important;
+        min-height: 28px !important;
+        max-height: 28px !important;
+        flex: 0 0 auto !important;
+        align-items: center;
+        justify-content: center;
+        pointer-events: auto;
+        -webkit-app-region: no-drag;
+      }
+      .codex-plus-composer-trigger {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 2px;
+        width: max-content;
+        min-width: 0;
+        height: 28px !important;
+        min-height: 28px !important;
+        max-height: 28px !important;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text-secondary, var(--token-text-secondary, rgba(142, 142, 160, .95))) !important;
+        font: 12px/14px system-ui, sans-serif;
+        white-space: nowrap;
+        cursor: pointer;
+        pointer-events: auto;
+        -webkit-app-region: no-drag;
+      }
+      .codex-plus-composer-trigger:hover,
+      .codex-plus-composer-trigger:hover .codex-plus-trigger-label {
+        color: var(--text-secondary, var(--token-text-secondary, rgba(142, 142, 160, .95))) !important;
+      }
+      .codex-plus-trigger-label { line-height: 14px; }
+      .codex-plus-status-line {
+        position: relative;
+        overflow: hidden;
+        align-self: stretch;
+        width: auto;
+        min-width: 100%;
+        flex: 0 0 2px;
+        height: 2px;
+        border-radius: 999px;
+        background: #34d399;
+        transition: background .18s ease, box-shadow .18s ease, opacity .18s ease;
+      }
+      .codex-plus-status-line::after {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 3px;
+        height: 2px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.98);
+        box-shadow: 0 0 5px rgba(255,255,255,.9);
+        content: "";
+        opacity: 0;
+        pointer-events: none;
+      }
+      .codex-plus-status-line[data-status="checking"] { background: #fbbf24; box-shadow: 0 0 6px rgba(251,191,36,.35); }
+      .codex-plus-status-line[data-status="working"] { background: linear-gradient(90deg, #60a5fa, #a78bfa, #60a5fa); background-size: 200% 100%; box-shadow: 0 0 7px rgba(129,140,248,.5); animation: codex-plus-status-line-flow 1.8s linear infinite; }
+      .codex-plus-status-line[data-status="working"]::after { opacity: 1; animation: codex-plus-status-marker-travel 1.2s ease-in-out infinite alternate; }
+      .codex-plus-status-line[data-status="waiting"] { background: #fbbf24; box-shadow: 0 0 7px rgba(251,191,36,.45); animation: codex-plus-status-line-pulse 1.2s ease-in-out infinite; }
+      .codex-plus-status-line[data-status="failed"] { background: #ef4444; box-shadow: 0 0 7px rgba(239,68,68,.5); }
+      .codex-plus-status-line[data-status="idle"] { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,.4); }
+      .codex-plus-status-line[data-completion="true"]::after { opacity: 1; animation: codex-plus-status-marker-complete .42s ease-out forwards; }
+      @keyframes codex-plus-status-line-flow { from { background-position: 0 0; } to { background-position: 200% 0; } }
+      @keyframes codex-plus-status-marker-travel { from { left: 0; } to { left: calc(100% - 3px); } }
+      @keyframes codex-plus-status-marker-complete { 0% { transform: translateX(0) scale(1); opacity: 1; box-shadow: 0 0 5px rgba(255,255,255,.9); } 45% { transform: translateX(0) scale(2.2); opacity: 1; box-shadow: 0 0 9px rgba(255,255,255,1); } 100% { transform: translateX(0) scale(1); opacity: 0; box-shadow: 0 0 0 rgba(255,255,255,0); } }
+      @keyframes codex-plus-status-line-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) {
+        .codex-plus-status-line[data-status="working"], .codex-plus-status-line[data-status="waiting"], .codex-plus-status-line[data-status="working"]::after, .codex-plus-status-line[data-completion="true"]::after { animation: none; }
+        .codex-plus-status-line[data-status="working"]::after { opacity: 1; transform: translateX(0); }
+        .codex-plus-status-line[data-completion="true"]::after { opacity: 0; }
+      }
       .codex-plus-modal-overlay {
         position: fixed;
         inset: 0;
@@ -2204,6 +2290,14 @@
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
   let codexPlusBackendStatus = { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
+  let codexPlusWorkState = "idle";
+  let codexPlusWorkStateSince = 0;
+  let codexPlusWorkStateResetTimer = 0;
+  let codexPlusWorkStateObserver = null;
+  let codexPlusWorkStateRuntimeInstalled = false;
+  let codexPlusComposerMenuObserver = null;
+  let codexPlusComposerMenuRepairFrame = 0;
+  let codexPlusComposerMenuPositionFrame = 0;
 
   function setCodexPlusTriggerLabel(trigger) {
     if (!trigger) return;
@@ -2228,11 +2322,187 @@
     return indicator;
   }
 
+  function codexPlusComposerFooter() {
+    const composer = document.querySelector("[data-codex-composer]");
+    if (!composer) return null;
+    let node = composer;
+    for (let depth = 0; node instanceof HTMLElement && depth < 9; depth += 1, node = node.parentElement) {
+      const className = String(node.className || "");
+      if (node.matches?.(".composer-footer, .composer-surface-chrome, [data-testid='composer-footer']") || className.includes("ComposerLayoutFooter")) return node;
+    }
+    return composer.parentElement?.parentElement?.parentElement?.parentElement || null;
+  }
+
+  function codexPlusComposerAnchor() {
+    const composer = document.querySelector("[data-codex-composer]");
+    if (!composer) return null;
+    let node = composer;
+    for (let depth = 0; node instanceof HTMLElement && depth < 9; depth += 1, node = node.parentElement) {
+      const className = String(node.className || "");
+      if (className.includes("ComposerLayoutBody")) return node;
+    }
+    return composer.parentElement?.parentElement?.parentElement?.parentElement || null;
+  }
+
+  function scheduleCodexPlusComposerMenuRepair() {
+    if (codexPlusComposerMenuRepairFrame) return;
+    codexPlusComposerMenuRepairFrame = requestAnimationFrame(() => {
+      codexPlusComposerMenuRepairFrame = 0;
+      installCodexPlusComposerMenu();
+    });
+  }
+
+  function positionCodexPlusComposerMenu() {
+    const menu = document.getElementById(codexPlusMenuId);
+    const anchor = codexPlusComposerAnchor();
+    if (!menu || !anchor) return;
+    const anchorRect = anchor.getBoundingClientRect();
+    if (anchorRect.width <= 0 || anchorRect.height <= 0) return;
+    const menuHeight = menu.getBoundingClientRect().height || 28;
+    const viewportPadding = 4;
+    const preferredTop = anchorRect.bottom + 5;
+    const clampedTop = Math.max(
+      viewportPadding,
+      Math.min(preferredTop, window.innerHeight - menuHeight - viewportPadding),
+    );
+    menu.style.setProperty("--codex-plus-composer-menu-left", `${anchorRect.left + anchorRect.width / 2}px`);
+    menu.style.setProperty("--codex-plus-composer-menu-top", `${clampedTop}px`);
+    menu.dataset.codexPlusMenuClamped = String(clampedTop !== preferredTop);
+  }
+
+  function scheduleCodexPlusComposerMenuPosition() {
+    if (codexPlusComposerMenuPositionFrame) return;
+    codexPlusComposerMenuPositionFrame = requestAnimationFrame(() => {
+      codexPlusComposerMenuPositionFrame = 0;
+      positionCodexPlusComposerMenu();
+    });
+  }
+
+  function installCodexPlusComposerMenuObserver() {
+    if (codexPlusComposerMenuObserver || !document.body) return;
+    codexPlusComposerMenuObserver = new MutationObserver(() => {
+      const menu = document.getElementById(codexPlusMenuId);
+      const anchor = codexPlusComposerAnchor();
+      if (!anchor || (menu && menu.parentElement === document.body)) {
+        scheduleCodexPlusComposerMenuPosition();
+        return;
+      }
+      scheduleCodexPlusComposerMenuRepair();
+    });
+    codexPlusComposerMenuObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("resize", scheduleCodexPlusComposerMenuPosition, { passive: true });
+    window.addEventListener("scroll", scheduleCodexPlusComposerMenuPosition, { passive: true, capture: true });
+  }
+
+  function codexPlusComposerWorkStatus() {
+    const footer = codexPlusComposerFooter();
+    if (!footer) return "unknown";
+    const buttons = Array.from(footer.querySelectorAll("button, [role='button']"));
+    const visible = (button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && getComputedStyle(button).visibility !== "hidden";
+    };
+    const buttonLabel = (button) => String(
+      button.getAttribute("aria-label")
+        || button.getAttribute("title")
+        || button.getAttribute("data-testid")
+        || button.textContent
+        || "",
+    ).trim();
+    const hasStopButton = buttons.some((button) => visible(button) && /停止|stop|cancel generation|取消生成|abort|中止/i.test(buttonLabel(button)));
+    const hasBusyControl = buttons.some((button) => visible(button) && (
+      button.getAttribute("aria-busy") === "true"
+        || button.getAttribute("data-state") === "loading"
+        || button.matches("[data-loading='true'], [data-generating='true'], [aria-label*='generat' i]")
+    ));
+    if (hasStopButton || hasBusyControl) return "working";
+    const alert = footer.querySelector('[role="alert"], [data-status="error"], .text-error, .text-danger');
+    if (alert && visible(alert)) return "failed";
+    const hasReadySendButton = buttons.some((button) => visible(button)
+      && /^(发送|send|提交|submit)$/i.test(buttonLabel(button))
+      && !button.disabled
+      && button.getAttribute("aria-busy") !== "true");
+    return hasReadySendButton ? "idle" : "unknown";
+  }
+
+  function codexPlusEffectiveStatus() {
+    if (codexPlusBackendStatus.status === "checking") return "checking";
+    if (codexPlusBackendStatus.status !== "ok") return "failed";
+    if (codexPlusWorkState === "working" || codexPlusWorkState === "waiting") return codexPlusWorkState;
+    return codexPlusWorkState === "failed" ? "failed" : "idle";
+  }
+
+  function renderCodexPlusStatusLine() {
+    const status = codexPlusEffectiveStatus();
+    document.querySelectorAll("[data-codex-plus-status-line]").forEach((line) => {
+      const previousStatus = line.dataset.status || "";
+      line.dataset.status = status;
+      if ((previousStatus === "working" || previousStatus === "waiting") && status === "idle") {
+        line.dataset.completion = "false";
+        void line.offsetWidth;
+        line.dataset.completion = "true";
+        window.setTimeout(() => {
+          if (line.dataset.status === "idle") line.dataset.completion = "false";
+        }, 500);
+      }
+      line.title = status === "working" ? "Codex 正在工作" : status === "waiting" ? "正在等待 Codex 响应" : status === "checking" ? "正在检查 CodexGO" : status === "failed" ? "CodexGO 或后端异常" : "CodexGO 已就绪";
+    });
+  }
+
+  function setCodexPlusWorkState(state) {
+    const nextState = ["idle", "working", "waiting", "failed"].includes(state) ? state : "idle";
+    if (nextState !== codexPlusWorkState) codexPlusWorkStateSince = Date.now();
+    codexPlusWorkState = nextState;
+    renderCodexPlusStatusLine();
+  }
+
+  function scheduleCodexPlusWorkStateRefresh() {
+    clearTimeout(codexPlusWorkStateResetTimer);
+    codexPlusWorkStateResetTimer = window.setTimeout(() => {
+      const observed = codexPlusComposerWorkStatus();
+      if (observed === "working") setCodexPlusWorkState("working");
+      else if (observed === "failed") setCodexPlusWorkState("failed");
+      else if (observed === "idle" && codexPlusWorkState === "working") setCodexPlusWorkState("idle");
+      else if (codexPlusWorkState === "waiting") {
+        if (observed === "idle" && Date.now() - codexPlusWorkStateSince >= 900) setCodexPlusWorkState("idle");
+        else scheduleCodexPlusWorkStateRefresh();
+      }
+    }, 120);
+  }
+
+  function installCodexPlusWorkStateRuntime() {
+    if (codexPlusWorkStateRuntimeInstalled) return;
+    codexPlusWorkStateRuntimeInstalled = true;
+    document.addEventListener("click", (event) => {
+      const button = event.target?.closest?.("button, [role='button']");
+      if (!button) return;
+      const label = String(button.getAttribute("aria-label") || button.textContent || "").trim();
+      if (/^(发送|Send|提交|Submit)$/i.test(label)) {
+        setCodexPlusWorkState("waiting");
+        scheduleCodexPlusWorkStateRefresh();
+      } else if (/^(停止|Stop|取消生成|Cancel generation)$/i.test(label)) {
+        setCodexPlusWorkState("working");
+      }
+    }, true);
+    const observe = () => {
+      const footer = codexPlusComposerFooter();
+      if (!footer) return;
+      if (codexPlusWorkStateObserver) codexPlusWorkStateObserver.disconnect();
+      codexPlusWorkStateObserver = new MutationObserver(scheduleCodexPlusWorkStateRefresh);
+      codexPlusWorkStateObserver.observe(footer, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-label", "disabled", "data-state", "hidden"] });
+    };
+    observe();
+    window.setInterval(observe, 1000);
+  }
+
   function renderBackendStatus() {
     const status = codexPlusBackendStatus.status || "failed";
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
+        node.textContent = `${codexPlusDisplayName} ${codexPlusVersion}`;
+      });
+      document.querySelectorAll("[data-codex-plus-trigger-label]").forEach((node) => {
         node.textContent = `${codexPlusDisplayName} ${codexPlusVersion}`;
       });
       document.querySelectorAll(`#${codexPlusMenuId} button`).forEach(setCodexPlusTriggerLabel);
@@ -2248,7 +2518,58 @@
     });
     const repair = document.querySelector("[data-codex-backend-repair]");
     if (repair) repair.hidden = status === "ok" || status === "checking";
+    renderCodexPlusStatusLine();
     refreshCodexServiceTierControls();
+  }
+
+  function setCodexPlusComposerTriggerLabel(trigger) {
+    if (!trigger) return;
+    const label = trigger.querySelector("[data-codex-plus-trigger-label]");
+    if (label) label.textContent = `${codexPlusDisplayName} ${codexPlusVersion}`;
+  }
+
+  function installCodexPlusComposerMenu() {
+    installCodexPlusComposerMenuObserver();
+    const existing = document.getElementById(codexPlusMenuId);
+    document.querySelectorAll("button").forEach((button) => {
+      if ((button.textContent || "").trim() === `${codexPlusDisplayName} ${codexPlusVersion}` && !button.closest(`#${codexPlusMenuId}`)) button.remove();
+    });
+    const anchor = codexPlusComposerAnchor();
+    if (!anchor) {
+      existing?.remove();
+      renderCodexPlusStatusLine();
+      return;
+    }
+    if (existing && existing.parentElement === document.body && existing.dataset.codexPlusMenuVersion === "8") {
+      setCodexPlusComposerTriggerLabel(existing.querySelector("button"));
+      scheduleCodexPlusComposerMenuPosition();
+      renderCodexPlusStatusLine();
+      installCodexPlusWorkStateRuntime();
+      return;
+    }
+    existing?.remove();
+    document.querySelectorAll(`[data-codex-plus-menu="true"]`).forEach((node) => node.remove());
+    const menu = document.createElement("div");
+    menu.id = codexPlusMenuId;
+    menu.className = "codex-plus-composer-menu";
+    menu.dataset.codexPlusMenu = "true";
+    menu.dataset.codexPlusMenuVersion = "8";
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "codex-plus-composer-trigger";
+    trigger.dataset.codexPlusTriggerInstalled = "6";
+    trigger.innerHTML = `<span class="codex-plus-trigger-label" data-codex-plus-trigger-label>${codexPlusDisplayName} ${codexPlusVersion}</span><span class="codex-plus-status-line" data-codex-plus-status-line="true" data-status="checking"></span>`;
+    trigger.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openCodexPlusModal();
+    }, true);
+    menu.appendChild(trigger);
+    document.body.appendChild(menu);
+    positionCodexPlusComposerMenu();
+    installCodexPlusWorkStateRuntime();
+    setCodexPlusComposerTriggerLabel(trigger);
+    renderCodexPlusStatusLine();
   }
 
   function withBackendTimeout(request) {
@@ -8034,7 +8355,7 @@
 
   function scanLightweight() {
     installStyle();
-    installCodexPlusMenu();
+    installCodexPlusComposerMenu();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
     updateThreadScrollHandlers();
@@ -8776,7 +9097,7 @@
         if (group) delete group.dataset.codexActionLayoutStable;
       });
       syncActionGroupsLayout();
-      updateFloatingCodexPlusMenuPosition(document.getElementById(codexPlusMenuId));
+      installCodexPlusComposerMenu();
       runScanStep(refreshConversationTimeline);
       runScanStep(refreshConversationView);
     });

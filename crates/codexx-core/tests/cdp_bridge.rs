@@ -1028,6 +1028,32 @@ fn injection_script_uses_generic_app_server_discovery_and_electron_bridge() {
     assert!(!script.contains("app-server-manager-signals-C1h8B-R-.js"));
 }
 
+#[test]
+fn injection_script_keeps_codexgo_trigger_stably_anchored_in_composer() {
+    let script = assets::injection_script(57321);
+
+    assert!(script.contains("codexPlusComposerFooter"));
+    assert!(script.contains("codexPlusComposerAnchor"));
+    assert!(script.contains("codex-plus-status-line"));
+    assert!(script.contains("codex-plus-status-line::after"));
+    assert!(script.contains("codex-plus-status-marker-travel"));
+    assert!(script.contains("codex-plus-status-marker-complete"));
+    assert!(script.contains("data-completion=\"true\""));
+    assert!(script.contains("position: fixed !important"));
+    assert!(script.contains("anchorRect.bottom + 5"));
+    assert!(script.contains("window.innerHeight - menuHeight - viewportPadding"));
+    assert!(script.contains("--codex-plus-composer-menu-left"));
+    assert!(script.contains("--codex-plus-composer-menu-top"));
+    assert!(script.contains("menu.parentElement === document.body"));
+    assert!(script.contains("height: 28px !important"));
+    assert!(script.contains("codexPlusComposerMenuObserver"));
+    assert!(script.contains("codexPlusMenuVersion = \"8\""));
+    assert!(script.contains("installCodexPlusComposerMenu"));
+    assert!(script.contains("codexPlusWorkState"));
+    assert!(script.contains("text-secondary"));
+    assert!(script.contains("rgba(142, 142, 160, .95)"));
+}
+
 #[tokio::test]
 async fn list_targets_can_query_ipv6_loopback_cdp_endpoint() {
     let listener = TcpListener::bind("[::1]:0")

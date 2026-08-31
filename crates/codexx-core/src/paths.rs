@@ -5,6 +5,9 @@ const APP_STATE_DIR: &str = ".codexx";
 const SETTINGS_FILE: &str = "settings.json";
 const LATEST_STATUS_FILE: &str = "latest-status.json";
 const DIAGNOSTIC_LOG_FILE: &str = "codexx.log";
+const SKILLS_STATE_FILE: &str = "skills.json";
+const SKILLS_DIR: &str = "skills";
+const SKILL_BACKUPS_DIR: &str = "skill-backups";
 
 pub fn default_app_state_dir() -> PathBuf {
     if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
@@ -27,6 +30,18 @@ pub fn default_latest_status_path() -> PathBuf {
 
 pub fn default_diagnostic_log_path() -> PathBuf {
     default_app_state_dir().join(DIAGNOSTIC_LOG_FILE)
+}
+
+pub fn default_skills_source_dir() -> PathBuf {
+    default_app_state_dir().join(SKILLS_DIR)
+}
+
+pub fn default_skills_state_path() -> PathBuf {
+    default_app_state_dir().join(SKILLS_STATE_FILE)
+}
+
+pub fn default_skill_backups_dir() -> PathBuf {
+    default_app_state_dir().join(SKILL_BACKUPS_DIR)
 }
 
 fn settings_path_for_tests() -> Option<PathBuf> {
