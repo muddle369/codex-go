@@ -1,6 +1,7 @@
 use anyhow::Context;
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -401,11 +402,13 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
+    let config_with_catalog =
+        apply_profile_model_catalog_to_config(home, profile, &config_with_limits)?.0;
 
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
         apply_relay_files_to_home_with_computer_use_guard(
             home,
-            &config_with_limits,
+            &config_with_catalog,
             &profile.auth_contents,
             preserve_computer_use_guard,
         )
@@ -413,7 +416,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
         let auth_contents = official_profile_auth_for_switch(home, &profile.auth_contents)?;
         apply_relay_files_to_home_with_computer_use_guard(
             home,
-            &config_with_limits,
+            &config_with_catalog,
             &auth_contents,
             preserve_computer_use_guard,
         )
@@ -437,7 +440,171 @@ pub fn apply_relay_profile_config_to_home_with_context(
         &profile.context_window,
         &profile.auto_compact_limit,
     )?;
-    apply_relay_config_file_to_home(home, &config_with_limits)
+    let config_with_catalog =
+        apply_profile_model_catalog_to_config(home, profile, &config_with_limits)?.0;
+    apply_relay_config_file_to_home(home, &config_with_catalog)
+}
+
+const CODEXGO_MODEL_CATALOG_PREFIX: &str = "codexgo-";
+
+fn managed_model_catalog_relative_path(profile: &RelayProfile) -> String {
+    let safe_id = profile
+        .id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let safe_id = if safe_id.is_empty() {
+        "profile"
+    } else {
+        safe_id.as_str()
+    };
+    let digest = Sha256::digest(profile.id.as_bytes());
+    let digest = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("model-catalogs/{CODEXGO_MODEL_CATALOG_PREFIX}{safe_id}-{digest}.json")
+}
+
+fn managed_model_catalog_pointer(
+    home: &Path,
+    relative: &str,
+    config: &str,
+) -> anyhow::Result<String> {
+    let uses_wsl = |contents: &str| {
+        parse_toml_document(contents)
+            .ok()
+            .and_then(|doc| {
+                doc.get("desktop")?
+                    .get("runCodexInWindowsSubsystemForLinux")?
+                    .as_bool()
+            })
+            .unwrap_or(false)
+    };
+    let live_config = read_optional_text(&home.join("config.toml")).unwrap_or_default();
+    if uses_wsl(&live_config) || uses_wsl(config) {
+        return Ok(relative.replace('\\', "/"));
+    }
+    Ok(std::path::absolute(home.join(relative))?
+        .to_string_lossy()
+        .to_string())
+}
+
+fn is_codexgo_model_catalog_pointer(home: &Path, pointer: &str) -> bool {
+    let path = Path::new(pointer);
+    let relative = if path.is_absolute() {
+        let Ok(home) = std::path::absolute(home) else {
+            return false;
+        };
+        let Ok(relative) = path.strip_prefix(home) else {
+            return false;
+        };
+        relative
+    } else {
+        path
+    };
+    let mut components = relative
+        .components()
+        .filter(|component| *component != std::path::Component::CurDir);
+    let Some(std::path::Component::Normal(directory)) = components.next() else {
+        return false;
+    };
+    let Some(std::path::Component::Normal(filename)) = components.next() else {
+        return false;
+    };
+    let filename = filename.to_string_lossy();
+    directory == "model-catalogs"
+        && filename.starts_with(CODEXGO_MODEL_CATALOG_PREFIX)
+        && filename.ends_with(".json")
+        && components.next().is_none()
+}
+
+fn apply_profile_model_catalog_to_config(
+    home: &Path,
+    profile: &RelayProfile,
+    config_text: &str,
+) -> anyhow::Result<(String, bool)> {
+    let mut doc = parse_toml_document(config_text)?;
+    let current_pointer = doc
+        .get("model_catalog_json")
+        .and_then(Item::as_str)
+        .map(ToString::to_string);
+
+    if profile.model_list.trim().is_empty() {
+        if current_pointer
+            .as_deref()
+            .is_some_and(|pointer| is_codexgo_model_catalog_pointer(home, pointer))
+        {
+            doc.remove("model_catalog_json");
+            return Ok((normalize_optional_toml(doc), true));
+        }
+        return Ok((config_text.to_string(), false));
+    }
+
+    if current_pointer
+        .as_deref()
+        .is_some_and(|pointer| !is_codexgo_model_catalog_pointer(home, pointer))
+    {
+        return Ok((config_text.to_string(), false));
+    }
+
+    let (model_list, model_windows) =
+        crate::model_suffix::migrate_model_list_with_suffixes(&profile.model_list);
+    let entries = crate::model_suffix::collect_catalog_entries(
+        &model_list,
+        &model_windows,
+        &relay_profile_model(profile),
+    );
+    if entries.is_empty() {
+        return Ok((config_text.to_string(), false));
+    }
+
+    let fallback_window = crate::model_suffix::parse_window_token(&profile.context_window);
+    let catalog_json = crate::model_suffix::build_model_catalog_json(&entries, fallback_window);
+    let relative = managed_model_catalog_relative_path(profile);
+    let catalog_path = home.join(&relative);
+    if let Some(parent) = catalog_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let catalog_changed = std::fs::read_to_string(&catalog_path)
+        .map(|contents| contents != catalog_json)
+        .unwrap_or(true);
+    if catalog_changed {
+        crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
+    }
+
+    let pointer = managed_model_catalog_pointer(home, &relative, config_text)?;
+    let config_changed = current_pointer.as_deref() != Some(pointer.as_str());
+    if config_changed {
+        doc["model_catalog_json"] = toml_edit::value(pointer);
+    }
+    Ok((
+        normalize_optional_toml(doc),
+        catalog_changed || config_changed,
+    ))
+}
+
+pub fn ensure_relay_profile_model_catalog(
+    home: &Path,
+    profile: &RelayProfile,
+) -> anyhow::Result<bool> {
+    let config_path = home.join("config.toml");
+    let config = match std::fs::read_to_string(&config_path) {
+        Ok(config) => config,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let (updated, changed) = apply_profile_model_catalog_to_config(home, profile, &config)?;
+    if updated != config {
+        crate::settings::atomic_write(&config_path, updated.as_bytes())?;
+    }
+    Ok(changed)
 }
 
 pub fn apply_relay_config_file_to_home(
@@ -1169,6 +1336,72 @@ fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
             .parse::<DocumentMut>()
             .with_context(|| "config.toml TOML 解析失败")
     }
+}
+
+pub fn ensure_windows_sandbox_usable_for_current_user(home: &Path) -> anyhow::Result<bool> {
+    ensure_windows_sandbox_usable_with(home, windows_process_is_elevated())
+}
+
+fn ensure_windows_sandbox_usable_with(home: &Path, process_elevated: bool) -> anyhow::Result<bool> {
+    if process_elevated || windows_elevated_sandbox_setup_present(home) {
+        return Ok(false);
+    }
+    let config_path = home.join("config.toml");
+    let existing = match std::fs::read_to_string(&config_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut doc = parse_toml_document(&existing)?;
+    let Some(windows) = doc.get_mut("windows").and_then(Item::as_table_mut) else {
+        return Ok(false);
+    };
+    let elevated = windows
+        .get("sandbox")
+        .and_then(Item::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("elevated"));
+    if !elevated {
+        return Ok(false);
+    }
+    windows["sandbox"] = toml_edit::value("unelevated");
+    crate::settings::atomic_write(&config_path, normalize_optional_toml(doc).as_bytes())?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "launcher.windows_sandbox_downgraded",
+        json!({
+            "home": home.to_string_lossy(),
+            "from": "elevated",
+            "to": "unelevated",
+            "reason": "current process is not elevated and sandbox setup is incomplete",
+        }),
+    );
+    Ok(true)
+}
+
+fn windows_elevated_sandbox_setup_present(home: &Path) -> bool {
+    let version = |path: PathBuf| -> Option<u64> {
+        let text = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str::<Value>(&text)
+            .ok()?
+            .get("version")?
+            .as_u64()
+    };
+    match (
+        version(home.join(".sandbox").join("setup_marker.json")),
+        version(home.join(".sandbox-secrets").join("sandbox_users.json")),
+    ) {
+        (Some(marker), Some(users)) => marker == users,
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+fn windows_process_is_elevated() -> bool {
+    crate::windows_integration::current_process_is_elevated()
+}
+
+#[cfg(not(windows))]
+fn windows_process_is_elevated() -> bool {
+    true
 }
 
 fn remove_provider_specific_common_keys(table: &mut dyn TableLike) {
@@ -2333,6 +2566,117 @@ fn account_label_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_sandbox_is_downgraded_only_for_uninitialized_unelevated_launches() {
+        let home = tempfile::tempdir().unwrap();
+        let config = "[windows]\nsandbox = \"elevated\"\nsandbox_private_desktop = true\n";
+        std::fs::write(home.path().join("config.toml"), config).unwrap();
+
+        assert!(ensure_windows_sandbox_usable_with(home.path(), false).unwrap());
+        let updated = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+        let parsed: DocumentMut = updated.parse().unwrap();
+        assert_eq!(parsed["windows"]["sandbox"].as_str(), Some("unelevated"));
+        assert_eq!(
+            parsed["windows"]["sandbox_private_desktop"].as_bool(),
+            Some(true)
+        );
+
+        std::fs::write(home.path().join("config.toml"), config).unwrap();
+        std::fs::create_dir_all(home.path().join(".sandbox")).unwrap();
+        std::fs::create_dir_all(home.path().join(".sandbox-secrets")).unwrap();
+        std::fs::write(
+            home.path().join(".sandbox").join("setup_marker.json"),
+            r#"{"version":7}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.path()
+                .join(".sandbox-secrets")
+                .join("sandbox_users.json"),
+            r#"{"version":7}"#,
+        )
+        .unwrap();
+        assert!(!ensure_windows_sandbox_usable_with(home.path(), false).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            config
+        );
+
+        assert!(!ensure_windows_sandbox_usable_with(home.path(), true).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            config
+        );
+
+        let mismatched = tempfile::tempdir().unwrap();
+        std::fs::write(mismatched.path().join("config.toml"), config).unwrap();
+        std::fs::create_dir_all(mismatched.path().join(".sandbox")).unwrap();
+        std::fs::create_dir_all(mismatched.path().join(".sandbox-secrets")).unwrap();
+        std::fs::write(
+            mismatched.path().join(".sandbox/setup_marker.json"),
+            r#"{"version":7}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            mismatched
+                .path()
+                .join(".sandbox-secrets/sandbox_users.json"),
+            r#"{"version":6}"#,
+        )
+        .unwrap();
+        assert!(ensure_windows_sandbox_usable_with(mismatched.path(), false).unwrap());
+        let updated = std::fs::read_to_string(mismatched.path().join("config.toml")).unwrap();
+        assert!(updated.contains("sandbox = \"unelevated\""));
+
+        let incomplete_admin = tempfile::tempdir().unwrap();
+        std::fs::write(incomplete_admin.path().join("config.toml"), config).unwrap();
+        assert!(!ensure_windows_sandbox_usable_with(incomplete_admin.path(), true).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(incomplete_admin.path().join("config.toml")).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn windows_sandbox_downgrade_ignores_non_elevated_or_missing_configuration() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+        assert!(!ensure_windows_sandbox_usable_with(home.path(), false).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            "model = \"gpt-5\"\n"
+        );
+
+        let missing = tempfile::tempdir().unwrap();
+        assert!(!ensure_windows_sandbox_usable_with(missing.path(), false).unwrap());
+        assert!(!missing.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn windows_sandbox_preserves_explicit_unelevated_configuration() {
+        let home = tempfile::tempdir().unwrap();
+        let config = "[windows]\nsandbox = \"unelevated\"\n";
+        std::fs::write(home.path().join("config.toml"), config).unwrap();
+        assert!(!ensure_windows_sandbox_usable_with(home.path(), false).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            config
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_sandbox_guard_is_a_noop_on_non_windows_platforms() {
+        let home = tempfile::tempdir().unwrap();
+        let config = "[windows]\nsandbox = \"elevated\"\n";
+        std::fs::write(home.path().join("config.toml"), config).unwrap();
+        assert!(!ensure_windows_sandbox_usable_for_current_user(home.path()).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            config
+        );
+    }
 
     #[test]
     fn backfill_relay_profile_from_home_with_common_restores_template_provider_id() {

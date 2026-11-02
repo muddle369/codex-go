@@ -2836,6 +2836,49 @@ body {
   color: hsl(var(--foreground));
 }
 
+.launch-model-families {
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  border: 0;
+}
+
+.launch-model-families legend {
+  float: left;
+  margin-right: 2px;
+  padding: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.launch-model-families label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.launch-model-families input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: hsl(var(--primary));
+}
+
+.launch-model-families input:disabled {
+  cursor: not-allowed;
+}
+
+.launch-model-families small {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
 .launch-operation-card {
   margin-top: 24px;
   display: grid;
@@ -2967,17 +3010,21 @@ body {
 }
 
 .launch-action-button-cancel {
+  position: relative;
+  top: -1px;
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   border-radius: 999px;
   background: hsl(var(--foreground));
   color: hsl(var(--background));
-  font-size: 14px;
+  font-family: Arial, sans-serif;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 1;
+  line-height: 16px;
+  text-align: center;
   cursor: pointer;
   user-select: none;
   box-shadow: 0 0 0 1px hsl(var(--foreground) / 0.28), 0 1px 5px hsl(var(--background) / 0.42);

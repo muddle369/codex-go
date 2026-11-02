@@ -47,6 +47,18 @@ pub enum MacosCleanupPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosDebugLaunchAction {
+    LaunchNew,
+    ReuseRunningDebugApp,
+    RestartRunningApp,
+}
+
+const MACOS_DEBUG_TAKEOVER_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+const MACOS_DEBUG_TAKEOVER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+const INJECTION_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+const INJECTION_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsProcessControlStrategy {
     NativeWindowsApi,
 }
@@ -159,15 +171,46 @@ pub trait LaunchHooks: Send + Sync {
         self.inject(debug_port, helper_port).await
     }
     async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
-        for attempt in 1..=120 {
-            let result = match self.bridge_context(debug_port, app_dir).await {
-                Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
-                Ok(None) => self.inject(debug_port, helper_port).await,
-                Err(error) => Err(error),
+        let started = std::time::Instant::now();
+        let deadline = started + INJECTION_TOTAL_BUDGET;
+        let mut attempt = 0u32;
+        let mut last_error = None;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            attempt += 1;
+            let result = match tokio::time::timeout(remaining, async {
+                match self.bridge_context(debug_port, app_dir).await {
+                    Ok(Some(ctx)) => self.inject_bridge(debug_port, helper_port, ctx).await,
+                    Ok(None) => self.inject(debug_port, helper_port).await,
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!(
+                    "injection attempt exceeded the 90-second budget"
+                )),
             };
             match result {
-                Ok(()) => return true,
+                Ok(()) => {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.ensure_injection_done",
+                        serde_json::json!({
+                            "debug_port": debug_port,
+                            "helper_port": helper_port,
+                            "ready": true,
+                            "attempts": attempt,
+                            "elapsed_ms": started.elapsed().as_millis()
+                        }),
+                    );
+                    return true;
+                }
                 Err(error) => {
+                    last_error = Some(error.to_string());
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "launcher.ensure_injection_retry_failed",
                         serde_json::json!({
@@ -177,10 +220,25 @@ pub trait LaunchHooks: Send + Sync {
                             "message": error.to_string()
                         }),
                     );
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            tokio::time::sleep(remaining.min(INJECTION_RETRY_INTERVAL)).await;
         }
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.ensure_injection_done",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "helper_port": helper_port,
+                "ready": false,
+                "attempts": attempt,
+                "elapsed_ms": started.elapsed().as_millis(),
+                "last_error": last_error
+            }),
+        );
         false
     }
     async fn start_bridge_watchdog(
@@ -257,6 +315,37 @@ where
                 "launcher.after_provider_sync",
             );
         }
+        if settings.relay_profiles_enabled && settings.active_aggregate_relay_profile().is_none() {
+            let profile = settings.active_relay_profile();
+            if profile.relay_mode != crate::settings::RelayMode::Aggregate {
+                match crate::relay_config::ensure_relay_profile_model_catalog(&home, &profile) {
+                    Ok(true) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "launcher.model_catalog_repaired",
+                            serde_json::json!({
+                                "profile_id": profile.id,
+                                "model_count": profile
+                                    .model_list
+                                    .split(['\r', '\n', ','])
+                                    .map(str::trim)
+                                    .filter(|model| !model.is_empty())
+                                    .count()
+                            }),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "launcher.model_catalog_repair_failed",
+                            serde_json::json!({
+                                "profile_id": profile.id,
+                                "error": error.to_string()
+                            }),
+                        );
+                    }
+                }
+            }
+        }
         if settings.computer_use_guard_enabled {
             hooks.ensure_computer_use_config(&settings).await?;
         }
@@ -274,6 +363,12 @@ where
             crate::codex_app_state::prepare_projectless_main_window_nonfatal(
                 &home,
                 "launcher.prelaunch",
+            );
+        }
+        if crate::relay_config::ensure_windows_sandbox_usable_for_current_user(&home)? {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.windows_sandbox_setup_avoided",
+                serde_json::json!({ "reason": "sandbox_setup_incomplete_without_elevation" }),
             );
         }
         let launch = hooks
@@ -518,31 +613,77 @@ impl LaunchHooks for DefaultLaunchHooks {
                     app_user_model_id,
                     arguments,
                     ..
-                } = &activation
+                } = activation.clone()
                 else {
                     unreachable!();
                 };
-                let process_id = activate_packaged_app(app_user_model_id, arguments).await?;
-                return Ok(match activation {
-                    CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        ..
-                    } => CodexLaunch::PackagedActivation {
-                        app_user_model_id,
-                        arguments,
-                        process_id: Some(process_id),
-                    },
-                    CodexLaunch::Process { .. } => unreachable!(),
-                });
+                match activate_packaged_app(&app_user_model_id, &arguments).await {
+                    Ok(process_id) => {
+                        let executable = crate::app_paths::build_codex_executable(app_dir);
+                        match verify_packaged_activation(process_id, debug_port, &executable).await
+                        {
+                            PackagedActivationReadiness::Ready
+                            | PackagedActivationReadiness::Inconclusive => {
+                                return Ok(CodexLaunch::PackagedActivation {
+                                    app_user_model_id,
+                                    arguments,
+                                    process_id: (process_id != 0).then_some(process_id),
+                                });
+                            }
+                            PackagedActivationReadiness::FallbackToPackageContext => {
+                                return launch_packaged_context_fallback(
+                                    app_dir,
+                                    &app_user_model_id,
+                                    debug_port,
+                                    extra_args,
+                                    "Codex AUMID 激活提前退出",
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "launcher.packaged_activation_fallback",
+                            serde_json::json!({
+                                "app_dir": app_dir,
+                                "debug_port": debug_port,
+                                "message": format!("{error:#}")
+                            }),
+                        );
+                        #[cfg(windows)]
+                        if crate::windows_integration::current_process_is_elevated() {
+                            anyhow::bail!(
+                                "Codex MSIX 激活失败，且 CodexGO 正以管理员身份运行；为避免丢失包身份，不会按 WindowsApps 路径启动。请以普通权限重启 CodexGO。激活错误：{error:#}"
+                            );
+                        }
+                        return launch_packaged_context_fallback(
+                            app_dir,
+                            &app_user_model_id,
+                            debug_port,
+                            extra_args,
+                            &format!("Codex AUMID 激活失败：{error:#}"),
+                        )
+                        .await;
+                    }
+                }
             }
         }
 
         if app_dir.extension().and_then(|value| value.to_str()) == Some("app") {
-            let cleanup_policy = if is_macos_app_running(app_dir).await {
-                MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
-            } else {
-                MacosCleanupPolicy::QuitIfNotPreviouslyRunning
+            let launch_action = select_macos_debug_launch_action(
+                is_macos_app_running(app_dir).await,
+                crate::cdp::endpoint_available(debug_port),
+            );
+            let cleanup_policy = match launch_action {
+                MacosDebugLaunchAction::LaunchNew => MacosCleanupPolicy::QuitIfNotPreviouslyRunning,
+                MacosDebugLaunchAction::ReuseRunningDebugApp => {
+                    MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
+                }
+                MacosDebugLaunchAction::RestartRunningApp => {
+                    quit_macos_app_and_wait(app_dir).await?;
+                    MacosCleanupPolicy::QuitIfNotPreviouslyRunning
+                }
             };
             let command = build_macos_open_command(app_dir, debug_port, extra_args);
             let executable = command
@@ -2001,7 +2142,22 @@ pub fn build_codex_arguments(debug_port: u16, extra_args: &[String]) -> Vec<Stri
         format!("--remote-debugging-port={debug_port}"),
         format!("--remote-allow-origins=http://127.0.0.1:{debug_port}"),
     ];
-    args.extend(normalize_codex_extra_args(extra_args));
+    let extra_args = normalize_codex_extra_args(extra_args);
+    let mut index = 0;
+    while index < extra_args.len() {
+        let argument = &extra_args[index];
+        let switch_name = argument
+            .split_once('=')
+            .map_or(argument.as_str(), |(name, _)| name);
+        if switch_name.eq_ignore_ascii_case("--remote-debugging-port")
+            || switch_name.eq_ignore_ascii_case("--remote-allow-origins")
+        {
+            index += if argument.contains('=') { 1 } else { 2 };
+            continue;
+        }
+        args.push(argument.clone());
+        index += 1;
+    }
     args
 }
 
@@ -2023,6 +2179,138 @@ pub fn build_packaged_activation(
     Some(CodexLaunch::PackagedActivation {
         app_user_model_id: crate::app_paths::packaged_app_user_model_id(app_dir)?,
         arguments: command_line_arguments(&build_codex_arguments(debug_port, extra_args)),
+        process_id: None,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackagedActivationReadiness {
+    Ready,
+    FallbackToPackageContext,
+    Inconclusive,
+}
+
+async fn verify_packaged_activation(
+    process_id: u32,
+    debug_port: u16,
+    executable: &Path,
+) -> PackagedActivationReadiness {
+    let started = std::time::Instant::now();
+    let mut exited_since = None;
+    loop {
+        let cdp_probe =
+            tokio::task::spawn_blocking(move || crate::cdp::endpoint_available(debug_port));
+        let mut cdp_probe = cdp_probe;
+        let port_ready = tokio::time::timeout(std::time::Duration::from_secs(1), &mut cdp_probe)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false);
+        if port_ready {
+            return PackagedActivationReadiness::Ready;
+        }
+
+        let process_alive = windows_process_id_is_running(process_id, executable);
+        let elapsed = started.elapsed();
+        let exited_for = exited_since
+            .map(|since: std::time::Instant| since.elapsed())
+            .unwrap_or_default();
+        let verdict = crate::packaged_launch::observe_aumid_activation(
+            false,
+            process_alive,
+            elapsed,
+            exited_for,
+        );
+        if process_alive == Some(false) {
+            exited_since.get_or_insert_with(std::time::Instant::now);
+        } else {
+            exited_since = None;
+        }
+        match verdict {
+            crate::packaged_launch::AumidActivationVerdict::FallbackToPackageContext => {
+                return PackagedActivationReadiness::FallbackToPackageContext;
+            }
+            crate::packaged_launch::AumidActivationVerdict::Inconclusive => {
+                return PackagedActivationReadiness::Inconclusive;
+            }
+            crate::packaged_launch::AumidActivationVerdict::Pending
+            | crate::packaged_launch::AumidActivationVerdict::Ready => {}
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+fn windows_process_id_is_running(process_id: u32, executable: &Path) -> Option<bool> {
+    #[cfg(windows)]
+    {
+        if process_id == 0 {
+            return None;
+        }
+        let processes = crate::windows_integration::enumerate_processes();
+        if processes.is_empty() {
+            return None;
+        }
+        let expected_file = executable.file_name()?.to_string_lossy();
+        return Some(processes.iter().any(|process| {
+            if process.process_id != process_id
+                || !process.exe_file.eq_ignore_ascii_case(&expected_file)
+            {
+                return false;
+            }
+            process.executable_path.as_ref().is_none_or(|actual| {
+                actual
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&executable.to_string_lossy())
+            })
+        }));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = process_id;
+        let _ = executable;
+        None
+    }
+}
+
+async fn launch_packaged_context_fallback(
+    app_dir: &Path,
+    app_user_model_id: &str,
+    debug_port: u16,
+    extra_args: &[String],
+    cause: &str,
+) -> anyhow::Result<CodexLaunch> {
+    let executable = crate::app_paths::build_codex_executable(app_dir);
+    let arguments = build_codex_arguments(debug_port, extra_args);
+    let wrapper = crate::packaged_launch::prepare_main_instance_wrapper(
+        &crate::paths::default_app_state_dir(),
+        &executable,
+        &arguments,
+    )?;
+    crate::packaged_launch::activate_in_package_context(app_user_model_id, &wrapper)
+        .await
+        .with_context(|| format!("{cause}，包上下文回退启动失败"))?;
+    let ready = tokio::task::spawn_blocking(move || {
+        crate::packaged_launch::wait_for_instance_ready(
+            debug_port,
+            crate::packaged_launch::AUMID_ACTIVATION_VERIFY_WINDOW,
+        )
+    })
+    .await
+    .unwrap_or(false);
+    if !ready {
+        anyhow::bail!("{cause}，包上下文回退启动后调试端口 {debug_port} 未就绪");
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "launcher.packaged_context_fallback_ready",
+        serde_json::json!({
+            "app_dir": app_dir,
+            "debug_port": debug_port,
+            "cause": cause
+        }),
+    );
+    Ok(CodexLaunch::PackagedActivation {
+        app_user_model_id: app_user_model_id.to_string(),
+        arguments: command_line_arguments(&arguments),
         process_id: None,
     })
 }
@@ -2275,6 +2563,17 @@ pub fn build_macos_cleanup_command(
     ])
 }
 
+pub fn select_macos_debug_launch_action(
+    app_running: bool,
+    codex_cdp_available: bool,
+) -> MacosDebugLaunchAction {
+    match (app_running, codex_cdp_available) {
+        (false, _) => MacosDebugLaunchAction::LaunchNew,
+        (true, true) => MacosDebugLaunchAction::ReuseRunningDebugApp,
+        (true, false) => MacosDebugLaunchAction::RestartRunningApp,
+    }
+}
+
 async fn run_macos_cleanup_command(
     app_dir: &Path,
     policy: MacosCleanupPolicy,
@@ -2292,6 +2591,25 @@ async fn run_macos_cleanup_command(
         .status()
         .await
         .with_context(|| format!("failed to request macOS app quit for {}", app_dir.display()))?;
+    Ok(())
+}
+
+async fn quit_macos_app_and_wait(app_dir: &Path) -> anyhow::Result<()> {
+    run_macos_cleanup_command(app_dir, MacosCleanupPolicy::QuitIfNotPreviouslyRunning).await?;
+    let deadline = tokio::time::Instant::now() + MACOS_DEBUG_TAKEOVER_WAIT;
+    while is_macos_app_running(app_dir).await {
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "macOS Codex 在重新启动调试模式前未能退出：{}",
+                app_dir.display()
+            );
+        }
+        tokio::time::sleep(MACOS_DEBUG_TAKEOVER_INTERVAL).await;
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "launcher.macos_existing_app_without_cdp_stopped",
+        serde_json::json!({ "app_dir": app_dir }),
+    );
     Ok(())
 }
 

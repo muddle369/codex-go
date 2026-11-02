@@ -100,7 +100,26 @@ fn response_contains_codex_target(response: &[u8], debug_port: u16) -> bool {
     if !status_ok {
         return false;
     }
-    let Ok(targets) = serde_json::from_slice::<Vec<CdpTarget>>(&response[header_end + 4..]) else {
+    let chunked = headers.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("transfer-encoding")
+                && value
+                    .split(',')
+                    .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+        })
+    });
+    let body = &response[header_end + 4..];
+    let decoded_body;
+    let body = if chunked {
+        let Some(decoded) = decode_chunked_body(body) else {
+            return false;
+        };
+        decoded_body = decoded;
+        decoded_body.as_slice()
+    } else {
+        body
+    };
+    let Ok(targets) = serde_json::from_slice::<Vec<CdpTarget>>(body) else {
         return false;
     };
     targets.iter().any(|target| {
@@ -115,6 +134,26 @@ fn response_contains_codex_target(response: &[u8], debug_port: u16) -> bool {
                 .as_deref()
                 .is_some_and(|url| validate_cdp_websocket_url(url, debug_port).is_ok())
     })
+}
+
+fn decode_chunked_body(mut body: &[u8]) -> Option<Vec<u8>> {
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = body.windows(2).position(|window| window == b"\r\n")?;
+        let size_line = std::str::from_utf8(&body[..line_end]).ok()?;
+        let size = usize::from_str_radix(size_line.split(';').next()?.trim(), 16).ok()?;
+        body = &body[line_end + 2..];
+        if size == 0 {
+            return Some(decoded);
+        }
+        let chunk = body.get(..size)?;
+        decoded.extend_from_slice(chunk);
+        let remaining = body.get(size..)?;
+        if remaining.get(..2) != Some(b"\r\n") {
+            return None;
+        }
+        body = &remaining[2..];
+    }
 }
 
 pub async fn list_targets(debug_port: u16) -> anyhow::Result<Vec<CdpTarget>> {
@@ -297,7 +336,7 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
 }
 
 pub fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
-    is_codex_page_target(target)
+    (is_codex_app_page_target(target) || is_codex_page_target(target))
         && !is_avatar_overlay_page_target(target)
         && !is_quick_chat_page_target(target)
         && !is_global_dictation_page_target(target)
@@ -394,6 +433,42 @@ mod endpoint_tests {
 
         assert!(endpoint_available(port));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn endpoint_available_accepts_chunked_codex_target_response() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = format!(
+            r#"[{{"id":"codex","type":"page","title":"","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+        );
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let split = body.len() / 2;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n{:X}\r\n{}\r\n0\r\n\r\n",
+                split,
+                &body[..split],
+                body.len() - split,
+                &body[split..]
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        assert!(endpoint_available(port));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn exact_codex_main_target_does_not_require_a_title() {
+        let target: CdpTarget = serde_json::from_str(
+            r#"{"id":"codex","type":"page","title":"","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:9329/devtools/page/1"}"#,
+        )
+        .unwrap();
+
+        assert!(is_primary_codex_page_target(&target));
     }
 
     #[test]

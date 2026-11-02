@@ -1,5 +1,7 @@
 pub mod commands;
 pub mod install;
+#[cfg(target_os = "macos")]
+mod macos_takeover;
 
 use tauri::{
     RunEvent, WindowEvent,
@@ -28,6 +30,8 @@ pub fn run() {
             let _ = commands::show_main_window(app.clone());
         }))
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            macos_takeover::start();
             let url = if launch_panel {
                 "index.html?launchPanel=1"
             } else if first_run {

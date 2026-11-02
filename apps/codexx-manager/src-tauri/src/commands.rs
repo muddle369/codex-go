@@ -2404,6 +2404,36 @@ pub enum QuickConfigMode {
 pub struct QuickConfigureTokenRequest {
     pub token: String,
     pub mode: QuickConfigMode,
+    #[serde(default)]
+    pub model_families: QuickModelFamilies,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickModelFamilies {
+    #[serde(default = "default_true")]
+    pub gpt: bool,
+    #[serde(default)]
+    pub claude: bool,
+    #[serde(default)]
+    pub gemini: bool,
+    #[serde(default)]
+    pub grok: bool,
+}
+
+impl Default for QuickModelFamilies {
+    fn default() -> Self {
+        Self {
+            gpt: true,
+            claude: false,
+            gemini: false,
+            grok: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -2528,7 +2558,15 @@ pub async fn quick_configure_token(
     let mut profile = quick_relay_profile(&token, relay_mode, official_mix_api_key);
     match codexx_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
         Ok((models, endpoint)) => {
-            let filtered_models = filter_quick_profile_models(models);
+            let filtered_models = match collect_quick_profile_models(models, request.model_families)
+            {
+                Ok(models) => models,
+                Err(error) => {
+                    let home = codexx_core::relay_config::default_codex_home_dir();
+                    let status = codexx_core::relay_config::relay_status_from_home(&home);
+                    return failed(&error, relay_switch_payload(settings, status, None));
+                }
+            };
             profile.model_list = filtered_models.join("\n");
             log_manager_event(
                 "manager.quick_configure_token.models.ok",
@@ -2544,6 +2582,12 @@ pub async fn quick_configure_token(
                 json!({
                     "error": error.to_string()
                 }),
+            );
+            let home = codexx_core::relay_config::default_codex_home_dir();
+            let status = codexx_core::relay_config::relay_status_from_home(&home);
+            return failed(
+                "模型列表拉取失败，请检查网络环境或令牌权限。",
+                relay_switch_payload(settings, status, None),
             );
         }
     }
@@ -2710,9 +2754,16 @@ pub fn inspect_plugin_configuration() -> CommandResult<PluginMaintenancePayload>
     let home = codexx_core::relay_config::default_codex_home_dir();
     match codexx_core::plugin_maintenance::inspect_plugin_configuration(&home) {
         Ok(report) => {
-            let status = if report.issues.is_empty() { "ok" } else { "failed" };
+            let status = if report.issues.is_empty() {
+                "ok"
+            } else {
+                "failed"
+            };
             let message = if report.issues.is_empty() {
-                format!("插件配置正常，已检测 {} 个插件和 {} 个市场。", report.plugin_count, report.marketplace_count)
+                format!(
+                    "插件配置正常，已检测 {} 个插件和 {} 个市场。",
+                    report.plugin_count, report.marketplace_count
+                )
             } else {
                 format!("检测到 {} 个插件配置问题。", report.issues.len())
             };
@@ -2737,11 +2788,21 @@ pub fn repair_plugin_configuration() -> CommandResult<PluginMaintenancePayload> 
     let home = codexx_core::relay_config::default_codex_home_dir();
     match codexx_core::plugin_maintenance::repair_plugin_configuration(&home) {
         Ok(report) => {
-            let status = if report.issues.is_empty() { "ok" } else { "failed" };
-            let message = if report.issues.is_empty() {
-                format!("插件配置已修复并创建备份：{}", report.backup_path.as_deref().unwrap_or("未知路径"))
+            let status = if report.issues.is_empty() {
+                "ok"
             } else {
-                format!("已完成安全修复，但仍有 {} 个问题需要手动处理。", report.issues.len())
+                "failed"
+            };
+            let message = if report.issues.is_empty() {
+                format!(
+                    "插件配置已修复并创建备份：{}",
+                    report.backup_path.as_deref().unwrap_or("未知路径")
+                )
+            } else {
+                format!(
+                    "已完成安全修复，但仍有 {} 个问题需要手动处理。",
+                    report.issues.len()
+                )
             };
             CommandResult {
                 status: status.to_string(),
@@ -2765,7 +2826,10 @@ pub fn restore_plugin_configuration_backup() -> CommandResult<PluginMaintenanceP
     match codexx_core::plugin_maintenance::restore_latest_plugin_configuration_backup(&home) {
         Ok(report) => CommandResult {
             status: "ok".to_string(),
-            message: format!("已恢复插件配置备份：{}", report.backup_path.as_deref().unwrap_or("未知路径")),
+            message: format!(
+                "已恢复插件配置备份：{}",
+                report.backup_path.as_deref().unwrap_or("未知路径")
+            ),
             payload: PluginMaintenancePayload { report },
         },
         Err(error) => CommandResult {
@@ -3569,17 +3633,85 @@ fn sync_quick_launch_audio_model(settings: &mut BackendSettings, profile_id: &st
     }
 }
 
-fn filter_quick_profile_models(models: Vec<String>) -> Vec<String> {
-    models
+fn collect_quick_profile_models(
+    models: Vec<String>,
+    families: QuickModelFamilies,
+) -> Result<Vec<String>, String> {
+    if !families.gpt {
+        return Err("GPT 模型为必选项，不能取消。".to_string());
+    }
+    let gpt_models = sorted_model_family(models.iter(), |normalized| {
+        normalized.contains("gpt")
+            && !normalized.contains("image")
+            && normalized != "gpt-4o-mini-transcribe"
+            && normalized != "gpt-4o-transcribe"
+    });
+    if gpt_models.is_empty() {
+        return Err("模型列表中没有符合条件的 GPT 模型，请检查上游模型列表。".to_string());
+    }
+
+    let claude_models = if families.claude {
+        require_model_family(
+            sorted_model_family(models.iter(), |normalized| normalized.starts_with("claude")),
+            "Claude",
+        )?
+    } else {
+        Vec::new()
+    };
+    let gemini_models = if families.gemini {
+        require_model_family(
+            sorted_model_family(models.iter(), |normalized| {
+                normalized.starts_with("gemini") && !normalized.contains("image")
+            }),
+            "Gemini",
+        )?
+    } else {
+        Vec::new()
+    };
+    let grok_models = if families.grok {
+        require_model_family(
+            sorted_model_family(models.iter(), |normalized| {
+                normalized.starts_with("grok")
+                    && !normalized.contains("image")
+                    && !normalized.contains("video")
+                    && !normalized.contains("grok1.5")
+                    && !normalized.contains("grok-1.5")
+            }),
+            "Grok",
+        )?
+    } else {
+        Vec::new()
+    };
+
+    Ok(gpt_models
         .into_iter()
-        .filter(|model| {
-            let normalized = model.trim().to_lowercase();
-            normalized.contains("gpt")
-                && !normalized.contains("image")
-                && normalized != "gpt-4o-mini-transcribe"
-                && normalized != "gpt-4o-transcribe"
+        .chain(claude_models)
+        .chain(gemini_models)
+        .chain(grok_models)
+        .collect())
+}
+
+fn sorted_model_family<'a>(
+    models: impl Iterator<Item = &'a String>,
+    matches: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut models = models
+        .filter_map(|model| {
+            let trimmed = model.trim();
+            matches(&trimmed.to_lowercase()).then(|| trimmed.to_string())
         })
-        .collect()
+        .collect::<Vec<_>>();
+    models.sort_by(|left, right| right.to_lowercase().cmp(&left.to_lowercase()));
+    models.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    models
+}
+
+fn require_model_family(models: Vec<String>, name: &str) -> Result<Vec<String>, String> {
+    if models.is_empty() {
+        Err(format!("未找到所选的 {name} 模型，请检查上游模型列表。"))
+    } else {
+        Ok(models)
+    }
 }
 
 fn quick_config_contents(base_url: &str, token: &str) -> String {
@@ -4700,15 +4832,69 @@ model_reasoning_effort = "high"
     }
 
     #[test]
-    fn quick_profile_model_filter_excludes_audio_transcription_models() {
-        let models = filter_quick_profile_models(vec![
-            "gpt-5.5".to_string(),
-            "gpt-4o-mini-transcribe".to_string(),
-            "GPT-4O-TRANSCRIBE".to_string(),
-            "gpt-image-1".to_string(),
-            "claude-4".to_string(),
-        ]);
+    fn quick_profile_model_filter_groups_and_sorts_selected_families() {
+        let models = collect_quick_profile_models(
+            vec![
+                "gpt-5.4".to_string(),
+                "gpt-5.5".to_string(),
+                "gpt-4o-mini-transcribe".to_string(),
+                "gpt-image-1".to_string(),
+                "claude-4-sonnet".to_string(),
+                "Claude-4-opus".to_string(),
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-pro-image".to_string(),
+                "grok-3".to_string(),
+                "grok1.5-turbo".to_string(),
+                "grok-1.5-turbo".to_string(),
+                "grok-video".to_string(),
+            ],
+            QuickModelFamilies {
+                gpt: true,
+                claude: true,
+                gemini: true,
+                grok: true,
+            },
+        )
+        .unwrap();
 
-        assert_eq!(models, vec!["gpt-5.5"]);
+        assert_eq!(
+            models,
+            vec![
+                "gpt-5.5",
+                "gpt-5.4",
+                "claude-4-sonnet",
+                "Claude-4-opus",
+                "gemini-2.5-flash",
+                "grok-3",
+            ]
+        );
+    }
+
+    #[test]
+    fn quick_profile_model_filter_requires_gpt_models() {
+        let error = collect_quick_profile_models(
+            vec!["claude-4-sonnet".to_string()],
+            QuickModelFamilies {
+                gpt: true,
+                ..QuickModelFamilies::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("GPT"));
+    }
+
+    #[test]
+    fn quick_profile_model_filter_rejects_disabled_gpt_family() {
+        let error = collect_quick_profile_models(
+            vec!["gpt-5.5".to_string()],
+            QuickModelFamilies {
+                gpt: false,
+                ..QuickModelFamilies::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("必选"));
     }
 }

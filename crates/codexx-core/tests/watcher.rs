@@ -6,19 +6,34 @@ use codexx_core::watcher::{
 };
 
 #[test]
-fn cdp_listening_returns_true_for_bound_loopback_port() {
+fn cdp_listening_rejects_non_cdp_tcp_listener() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
 
-    assert!(cdp_listening(port));
+    assert!(!cdp_listening(port));
 }
 
 #[test]
-fn cdp_listening_returns_true_for_bound_ipv6_loopback_port() {
-    let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
+fn cdp_listening_recognizes_codex_cdp_response() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 1024];
+        let _ = std::io::Read::read(&mut stream, &mut request);
+        let body = format!(
+            r#"[{{"id":"codex","type":"page","title":"","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
+    });
 
     assert!(cdp_listening(port));
+    server.join().unwrap();
 }
 
 #[test]

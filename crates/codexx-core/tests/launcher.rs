@@ -11,6 +11,7 @@ use codexx_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
     build_codex_arguments, build_codex_command, build_macos_cleanup_command,
     build_macos_open_command, build_packaged_activation, launch_and_inject_with_hooks,
+    select_macos_debug_launch_action,
 };
 #[cfg(windows)]
 use codexx_core::launcher::{WindowsProcessControlStrategy, windows_process_control_strategy};
@@ -214,6 +215,25 @@ fn launcher_builds_debug_arguments_and_commands() {
 }
 
 #[test]
+fn launcher_ignores_user_debug_arguments_that_conflict_with_injection_port() {
+    let extra_args = vec![
+        "--remote-debugging-port".to_string(),
+        "1111".to_string(),
+        "--remote-allow-origins=*".to_string(),
+        "--force_high_performance_gpu".to_string(),
+    ];
+
+    assert_eq!(
+        build_codex_arguments(9329, &extra_args),
+        vec![
+            "--remote-debugging-port=9329".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9329".to_string(),
+            "--force_high_performance_gpu".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn launcher_does_not_override_codex_app_environment() {
     let source = include_str!("../src/launcher.rs");
 
@@ -369,6 +389,41 @@ fn launcher_macos_open_command_appends_extra_codex_arguments_after_args() {
             "--force_high_performance_gpu".to_string(),
         ]
     );
+}
+
+#[test]
+fn launcher_restarts_running_macos_app_when_debug_endpoint_is_missing() {
+    assert_eq!(
+        select_macos_debug_launch_action(true, false),
+        codexx_core::launcher::MacosDebugLaunchAction::RestartRunningApp
+    );
+}
+
+#[test]
+fn launcher_reuses_running_macos_app_when_debug_endpoint_is_available() {
+    assert_eq!(
+        select_macos_debug_launch_action(true, true),
+        codexx_core::launcher::MacosDebugLaunchAction::ReuseRunningDebugApp
+    );
+}
+
+#[test]
+fn launcher_builds_windows_package_context_wrapper_for_normal_launch() {
+    let script = codexx_core::packaged_launch::build_main_instance_wrapper_script(
+        Path::new(r"C:\Program Files\Codex\ChatGPT.exe"),
+        &[
+            "--remote-debugging-port=9329".to_string(),
+            "--remote-allow-origins=http://127.0.0.1:9329".to_string(),
+        ],
+    )
+    .unwrap();
+
+    assert!(script.contains("start \"\" /b \"C:\\Program Files\\Codex\\ChatGPT.exe\""));
+    assert!(script.contains("--remote-debugging-port=9329"));
+    assert!(script.contains("set \"ELECTRON_RUN_AS_NODE=\""));
+    assert!(script.contains("set \"ELECTRON_NO_ASAR=\""));
+    assert!(script.contains("set \"NODE_OPTIONS=\""));
+    assert!(!script.contains("CODEX_PLUS_MULTI_INSTANCE"));
 }
 
 #[test]

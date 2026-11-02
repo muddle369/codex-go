@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "codexx-core"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "codexx-data"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -544,7 +544,7 @@ dependencies = [
 
 [[package]]
 name = "codexx-launcher"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "codexx-manager"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "async-trait",

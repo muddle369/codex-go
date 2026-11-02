@@ -1,6 +1,7 @@
 pub mod app_paths;
 pub mod assets;
 pub mod audio_transcription;
+pub mod auto_takeover;
 pub mod brand;
 pub mod bridge;
 pub mod cdp;
@@ -20,8 +21,9 @@ pub mod mcp_config;
 pub mod model_catalog;
 pub mod model_suffix;
 pub mod models;
-pub mod plugin_maintenance;
+pub mod packaged_launch;
 pub mod paths;
+pub mod plugin_maintenance;
 pub mod ports;
 pub mod protocol_proxy;
 pub mod proxy;

@@ -199,6 +199,8 @@ pub struct BackendSettings {
     pub computer_use_guard_enabled: bool,
     #[serde(rename = "audioTranscriptionEnabled", default)]
     pub audio_transcription_enabled: bool,
+    #[serde(rename = "macosAutoTakeoverEnabled", default)]
+    pub macos_auto_takeover_enabled: bool,
     #[serde(rename = "codexAppPluginEntryUnlock", default = "default_true")]
     pub codex_app_plugin_entry_unlock: bool,
     #[serde(rename = "codexAppPluginMarketplaceUnlock", default = "default_true")]
@@ -357,6 +359,7 @@ impl Default for BackendSettings {
             enhancements_enabled: true,
             computer_use_guard_enabled: false,
             audio_transcription_enabled: false,
+            macos_auto_takeover_enabled: false,
             codex_app_plugin_entry_unlock: true,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_force_plugin_install: true,
@@ -758,6 +761,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     {
         target.insert("computerUseGuardEnabled".to_string(), Value::Bool(value));
     }
+    merge_bool_setting(target, source, "macosAutoTakeoverEnabled");
     merge_bool_setting(target, source, "codexAppPluginEntryUnlock");
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppForcePluginInstall");
@@ -1180,6 +1184,7 @@ mod tests {
         assert!(settings.enhancements_enabled);
         assert!(!settings.computer_use_guard_enabled);
         assert!(!settings.audio_transcription_enabled);
+        assert!(!settings.macos_auto_takeover_enabled);
         assert!(settings.codex_app_plugin_entry_unlock);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(settings.codex_app_force_plugin_install);
@@ -1218,6 +1223,15 @@ mod tests {
         assert_eq!(settings.cli_wrapper_api_key_env, "CUSTOM_OPENAI_API_KEY");
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.codex_extra_args.is_empty());
+        assert!(!settings.macos_auto_takeover_enabled);
+    }
+
+    #[test]
+    fn macos_auto_takeover_can_be_enabled_in_settings_json() {
+        let settings: BackendSettings =
+            serde_json::from_str(r#"{"macosAutoTakeoverEnabled":true}"#).unwrap();
+
+        assert!(settings.macos_auto_takeover_enabled);
     }
 
     #[test]
@@ -1730,6 +1744,7 @@ experimental_bearer_token = "sk-existing""#
             .update(json!({
             "providerSyncEnabled": true,
             "codexAppPath": "C:\\Portable\\Codex\\Codex.exe",
+            "macosAutoTakeoverEnabled": true,
             "enhancementsEnabled": false,
             "codexAppPluginEntryUnlock": false,
             "codexAppSessionDelete": false,
@@ -1747,6 +1762,7 @@ experimental_bearer_token = "sk-existing""#
 
         assert!(updated.provider_sync_enabled);
         assert_eq!(updated.codex_app_path, r"C:\Portable\Codex\Codex.exe");
+        assert!(updated.macos_auto_takeover_enabled);
         assert!(!updated.enhancements_enabled);
         assert!(!updated.codex_app_plugin_entry_unlock);
         assert!(!updated.codex_app_session_delete);

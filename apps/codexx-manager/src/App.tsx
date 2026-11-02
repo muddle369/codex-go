@@ -110,6 +110,7 @@ type BackendSettings = {
   enhancementsEnabled: boolean;
   computerUseGuardEnabled: boolean;
   audioTranscriptionEnabled: boolean;
+  macosAutoTakeoverEnabled: boolean;
   codexAppPluginEntryUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppForcePluginInstall: boolean;
@@ -278,6 +279,20 @@ type SettingsResult = CommandResult<{
 }>;
 
 type QuickConfigMode = "pureApi" | "mixedApi";
+type QuickModelFamilies = {
+  gpt: boolean;
+  claude: boolean;
+  gemini: boolean;
+  grok: boolean;
+};
+type OptionalQuickModelFamily = Exclude<keyof QuickModelFamilies, "gpt">;
+
+const DEFAULT_QUICK_MODEL_FAMILIES: QuickModelFamilies = {
+  gpt: true,
+  claude: false,
+  gemini: false,
+  grok: false,
+};
 
 type RelayResult = CommandResult<{
   authenticated: boolean;
@@ -630,6 +645,7 @@ const defaultSettings: BackendSettings = {
   enhancementsEnabled: true,
   computerUseGuardEnabled: false,
   audioTranscriptionEnabled: false,
+  macosAutoTakeoverEnabled: false,
   codexAppPluginEntryUnlock: true,
   codexAppPluginMarketplaceUnlock: true,
   codexAppForcePluginInstall: true,
@@ -744,6 +760,7 @@ export function App() {
   const [autoLaunchSeconds, setAutoLaunchSeconds] = useState<number | null>(null);
   const [quickToken, setQuickToken] = useState("");
   const [quickMode, setQuickMode] = useState<QuickConfigMode>("pureApi");
+  const [quickModelFamilies, setQuickModelFamilies] = useState<QuickModelFamilies>(DEFAULT_QUICK_MODEL_FAMILIES);
   const [launchProfileId, setLaunchProfileId] = useState("");
   const [quickConfigBusy, setQuickConfigBusy] = useState(false);
   const [quickTokenVisible, setQuickTokenVisible] = useState(false);
@@ -1156,16 +1173,18 @@ export function App() {
     }
   };
 
-  const quickConfigureFromPanel = async (launchAfterSave = false) => {
+  const quickConfigureFromPanel = async (launchAfterSave = false, tokenValue = quickToken) => {
     setAutoLaunchSeconds(null);
-    const token = quickToken.trim();
+    const token = tokenValue.trim();
     if (!token) {
       showNotice("一键配置", "请输入令牌后再保存。", "failed");
       return false;
     }
     setQuickConfigBusy(true);
     try {
-      const result = await run(() => call<RelaySwitchResult>("quick_configure_token", { request: { token, mode: quickMode } }));
+      const result = await run(() => call<RelaySwitchResult>("quick_configure_token", {
+        request: { token, mode: quickMode, modelFamilies: quickModelFamilies },
+      }));
       if (!result) return false;
       await handleRelaySwitchPayload(result);
       showNotice("一键配置", result.message, result.status);
@@ -1185,10 +1204,20 @@ export function App() {
   };
 
   const prepareLaunchPanelProfile = async () => {
+    const profileId = launchProfileId || defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true);
+    const selectedProfile = settingsForm.relayProfiles.find((profile) => profile.id === profileId);
+    const isQuickProfile = profileId === QUICK_PROFILE_ID || (hasOnlyDefaultRelayProfile(settingsForm) && profileId === "");
+    if (isQuickProfile) {
+      const token = quickToken.trim() || quickProfileToken(selectedProfile);
+      if (!token.trim()) {
+        showNotice("一键配置", "请输入令牌后再启动。", "failed");
+        return false;
+      }
+      return quickConfigureFromPanel(false, token);
+    }
     if (quickToken.trim()) {
       return quickConfigureFromPanel(false);
     }
-    const profileId = launchProfileId || defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true);
     if (!profileId) return startup?.setupCompleted === true;
     if (
       profileId === settingsForm.activeRelayId
@@ -1831,6 +1860,11 @@ export function App() {
 
   useEffect(() => {
     if (route !== "quickLaunch") return;
+    setQuickModelFamilies(DEFAULT_QUICK_MODEL_FAMILIES);
+  }, [route]);
+
+  useEffect(() => {
+    if (route !== "quickLaunch") return;
     if (!settings) return;
     setLaunchProfileId((current) => {
       const nextDefault = defaultLaunchProfileId(settingsForm, startup?.setupCompleted === true);
@@ -2187,6 +2221,10 @@ export function App() {
               }}
               onQuickTokenChange={setQuickToken}
               onQuickModeChange={setQuickMode}
+              quickModelFamilies={quickModelFamilies}
+              onQuickModelFamilyChange={(family, checked) => {
+                setQuickModelFamilies((current) => ({ ...current, [family]: checked }));
+              }}
               onSelectedProfileChange={(profileId) => {
                 setAutoLaunchSeconds(null);
                 setLaunchProfileId(profileId);
@@ -2274,6 +2312,8 @@ function LaunchPanel({
   quickTokenVisible,
   onToggleQuickTokenVisible,
   quickMode,
+  quickModelFamilies,
+  onQuickModelFamilyChange,
   selectedProfileId,
   quickConfigBusy,
   onCancelAutoLaunch,
@@ -2291,11 +2331,13 @@ function LaunchPanel({
   quickTokenVisible: boolean;
   onToggleQuickTokenVisible: () => void;
   quickMode: QuickConfigMode;
+  quickModelFamilies: QuickModelFamilies;
   selectedProfileId: string;
   quickConfigBusy: boolean;
   onCancelAutoLaunch: () => void;
   onQuickTokenChange: (value: string) => void;
   onQuickModeChange: (value: QuickConfigMode) => void;
+  onQuickModelFamilyChange: (family: OptionalQuickModelFamily, checked: boolean) => void;
   onSelectedProfileChange: (value: string) => void;
   onLaunch: () => void;
 }) {
@@ -2319,15 +2361,6 @@ function LaunchPanel({
   return (
     <div className={`launch-shell ${theme} quick-launch-shell`}>
       <section className="launch-card">
-        <div className="launch-brand">
-          <div className="brand-mark brand-mark-image">
-            <img src={codexxLogo} alt={BRAND.productName} />
-          </div>
-          <div>
-            <h1>{BRAND.productName}</h1>
-            <p>{setupCompleted ? "选择下一步操作，或等待自动启动 Codex。" : "首次使用前，请先完成基础配置。"}</p>
-          </div>
-        </div>
         <div className="launch-status">
           <span data-ready={setupCompleted}>{setupCompleted ? "配置已完成" : "需要配置"}</span>
           <strong>{codexPath}</strong>
@@ -2367,6 +2400,29 @@ function LaunchPanel({
               </label>
             ) : null}
           </div>
+          {showQuickConfig ? (
+            <fieldset className="launch-model-families" disabled={quickConfigBusy}>
+              <legend>同步模型</legend>
+              <label>
+                <input type="checkbox" checked={quickModelFamilies.gpt} disabled readOnly />
+                <span>GPT</span>
+                <small>必选</small>
+              </label>
+              {(["claude", "gemini", "grok"] as const).map((family) => {
+                const label = family === "claude" ? "Claude" : family === "gemini" ? "Gemini" : "Grok";
+                return (
+                  <label key={family}>
+                    <input
+                      type="checkbox"
+                      checked={quickModelFamilies[family]}
+                      onChange={(event) => onQuickModelFamilyChange(family, event.currentTarget.checked)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                );
+              })}
+            </fieldset>
+          ) : null}
           {quickConfigBusy ? <p className="launch-config-busy">正在保存并应用快捷配置…</p> : null}
         </div>
         <div className={`launch-operation-card ${showQuickConfig ? "" : "launch-operation-card-single"}`}>
@@ -2903,6 +2959,19 @@ function EnhanceScreen({
               <small>默认关闭；开启后监听 Codex 语音窗口，并按需将 WebM/Opus 转换为 WAV。修改后需重启 Codex 生效。</small>
             </span>
           </label>
+          {platformKind === "macos" ? (
+            <label className="switch-row">
+              <input
+                checked={form.macosAutoTakeoverEnabled}
+                onChange={(event) => onFormChange({ ...form, macosAutoTakeoverEnabled: event.currentTarget.checked })}
+                type="checkbox"
+              />
+              <span>
+                <strong>自动接管未注入的 Codex</strong>
+                <small>默认关闭。只在仅有一个 Codex、近期没有会话活动且未启用调试端口时请求正常退出，再由 CodexGO 重新启动并注入；不会强制结束进程。</small>
+              </span>
+            </label>
+          ) : null}
           <ModeSelector launchMode={form.launchMode} actions={actions} />
           {form.launchMode === "relay" ? (
             <div className="hint-line">
@@ -5743,6 +5812,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
     computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
     audioTranscriptionEnabled: settings.audioTranscriptionEnabled === true,
+    macosAutoTakeoverEnabled: settings.macosAutoTakeoverEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     relayCommonConfigContents,
     relayContextConfigContents,

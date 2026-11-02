@@ -935,7 +935,7 @@ enabled = true
 }
 
 #[test]
-fn apply_relay_profile_does_not_write_model_catalog_json_for_selected_models() {
+fn apply_relay_profile_writes_model_catalog_for_selected_models() {
     let temp = tempfile::tempdir().unwrap();
     let profile = RelayProfile {
         id: "relay-a".to_string(),
@@ -961,13 +961,85 @@ experimental_bearer_token = "sk-new"
         ..RelayProfile::default()
     };
 
-    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(!config.contains("model_catalog_json"));
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    let catalog_pointer = parsed["model_catalog_json"].as_str().unwrap();
+    let catalog_path = if std::path::Path::new(catalog_pointer).is_absolute() {
+        std::path::PathBuf::from(catalog_pointer)
+    } else {
+        temp.path().join(catalog_pointer)
+    };
+    let catalog: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(catalog_path).unwrap()).unwrap();
+    let slugs = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["slug"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(slugs, ["qwen3-coder", "deepseek-coder"]);
     assert!(config.contains("model_context_window = 200000"));
     assert!(config.contains("model_auto_compact_token_limit = 160000"));
-    assert!(!temp.path().join("model-catalogs").exists());
+}
+
+#[test]
+fn ensure_relay_profile_model_catalog_repairs_missing_catalog_and_is_idempotent() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let profile = RelayProfile {
+        id: "relay-a".to_string(),
+        name: "Relay A".to_string(),
+        model: "qwen3-coder".to_string(),
+        relay_mode: RelayMode::PureApi,
+        model_list: "deepseek-coder\nqwen3-coder".to_string(),
+        context_window: "200000".to_string(),
+        ..RelayProfile::default()
+    };
+    std::fs::write(
+        home.join("config.toml"),
+        "model = \"qwen3-coder\"\nmodel_provider = \"custom\"\n",
+    )
+    .unwrap();
+
+    assert!(codexx_core::relay_config::ensure_relay_profile_model_catalog(home, &profile).unwrap());
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    let pointer = parsed["model_catalog_json"].as_str().unwrap();
+    let catalog_path = if std::path::Path::new(pointer).is_absolute() {
+        std::path::PathBuf::from(pointer)
+    } else {
+        home.join(pointer)
+    };
+    let catalog: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(catalog_path).unwrap()).unwrap();
+    assert_eq!(catalog["models"].as_array().unwrap().len(), 2);
+    assert!(
+        !codexx_core::relay_config::ensure_relay_profile_model_catalog(home, &profile).unwrap()
+    );
+}
+
+#[test]
+fn ensure_relay_profile_model_catalog_does_not_create_catalog_for_empty_model_list() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let profile = RelayProfile {
+        id: "relay-empty".to_string(),
+        relay_mode: RelayMode::PureApi,
+        ..RelayProfile::default()
+    };
+    std::fs::write(home.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+
+    assert!(
+        !codexx_core::relay_config::ensure_relay_profile_model_catalog(home, &profile).unwrap()
+    );
+    assert!(!home.join("model-catalogs").exists());
+    assert!(
+        !std::fs::read_to_string(home.join("config.toml"))
+            .unwrap()
+            .contains("model_catalog_json")
+    );
 }
 
 #[test]
@@ -994,7 +1066,7 @@ experimental_bearer_token = "sk-new"
         ..RelayProfile::default()
     };
 
-    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "").unwrap();
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(config.contains(r#"model_catalog_json = "C:\\old\\catalog.json""#));

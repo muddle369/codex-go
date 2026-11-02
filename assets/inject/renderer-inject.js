@@ -66,7 +66,9 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "3";
-  const codexAppServerModelRequestPatchVersion = "2";
+  const codexAppServerModelRequestPatchVersion = "4";
+  const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
+  const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexPluginMarketplaceUnlockVersion = "11";
   const codexThreadScrollMaxEntries = 120;
   const codexThreadScrollSaveThrottleMs = 120;
@@ -1371,6 +1373,7 @@
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
   const codexServiceTierModulePromises = new Map();
+  const codexAppAssetUrlLookups = window.__codexPlusAssetUrlLookups || (window.__codexPlusAssetUrlLookups = new Map());
   const codexAppModuleFailures = new Map();
   const codexAppModuleRetryCooldownMs = 30_000;
   const codexAppModuleMaxAttempts = 8;
@@ -1386,11 +1389,15 @@
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
 
   function uniqueCodexAppAssetUrls(urls) {
-    return Array.from(new Set((urls || []).filter((url) => typeof url === "string" && url.includes("/assets/") && url.split("?")[0].endsWith(".js"))));
+    return Array.from(new Set((urls || []).filter((url) => typeof url === "string" && (
+      (url.includes("/assets/") && url.split("?")[0].endsWith(".js"))
+      || url.startsWith("blob:")
+    ))));
   }
 
   function codexAppAssetCandidateUrls() {
     return uniqueCodexAppAssetUrls([
+      window.__codexPlusNativeFastCompiled === "v1" ? window.__codexPlusNativeFastModuleDiagnostics?.url : null,
       ...Array.from(document.scripts || []).map((script) => script.src),
       ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
       ...performance.getEntriesByType("resource").map((entry) => entry.name),
@@ -1404,6 +1411,8 @@
 
   async function codexAppAssetUrlFromScriptText(namePart) {
     if (!namePart) return "";
+    const cached = codexAppAssetUrlLookups.get(namePart);
+    if (cached && (cached.url || Date.now() - cached.at < codexAppModuleRetryCooldownMs)) return cached.url;
     const scripts = codexAppAssetCandidateUrls();
     const escaped = String(namePart).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const patterns = [
@@ -1417,11 +1426,16 @@
         if (!text) continue;
         for (const pattern of patterns) {
           const match = text.match(pattern);
-          if (match) return new URL(match[1], src).href;
+          if (match) {
+            const url = new URL(match[1], src).href;
+            codexAppAssetUrlLookups.set(namePart, { at: Date.now(), url });
+            return url;
+          }
         }
       } catch {
       }
     }
+    codexAppAssetUrlLookups.set(namePart, { at: Date.now(), url: "" });
     return "";
   }
 
@@ -1464,18 +1478,20 @@
 
   function appServerFallbackAssetUrls() {
     const preferred = codexAppAssetCandidateUrls().filter((url) => {
+      if (url.startsWith("blob:")) return false;
       const name = (url.split("/").pop() || "").toLowerCase();
-      return /use-host-config|app-server-manager-signals|app-initial|app-main|page-|chatg|signals|server-manager|gwqc41kz|c1urrgy0|hsvsqcnf/.test(name);
+      return /use-host-config|app-server-manager-signals|app-shared|app-initial|app-main|page-|chatg|signals|server-manager|gwqc41kz|c1urrgy0|hsvsqcnf/.test(name);
     });
     preferred.sort((left, right) => {
       const score = (url) => {
         const name = (url.split("/").pop() || "").toLowerCase();
         if (name.includes("use-host-config")) return 0;
         if (name.includes("app-server-manager-signals")) return 1;
-        if (name.includes("gwqc41kz") || name.includes("c1urrgy0") || name.includes("hsvsqcnf")) return 2;
-        if (name.includes("app-initial") && name.includes("app-main")) return 3;
-        if (name.includes("app-main")) return 4;
-        return 5;
+        if (name.includes("app-shared")) return 2;
+        if (name.includes("gwqc41kz") || name.includes("c1urrgy0") || name.includes("hsvsqcnf")) return 3;
+        if (name.includes("app-initial") && name.includes("app-main")) return 4;
+        if (name.includes("app-main")) return 5;
+        return 6;
       };
       return score(left) - score(right) || right.length - left.length;
     });
@@ -1515,7 +1531,7 @@
       modules.push(module);
       sources.push(source);
     };
-    for (const assetPrefix of ["use-host-config-", "app-server-manager-signals-"]) {
+    for (const assetPrefix of ["use-host-config-", "app-server-manager-signals-", "app-shared-"]) {
       try {
         const module = await loadOptionalCodexAppModule(assetPrefix);
         if (module) pushModule(module, assetPrefix);
@@ -1545,15 +1561,59 @@
       }
     }
     const usedFallback = sources.some((source) => !source.endsWith("-"));
-    return { modules, candidates, sources, discovery: usedFallback ? "fallback" : "named-assets" };
+    return {
+      modules,
+      candidates,
+      sources,
+      assetUrlCount: codexAppAssetCandidateUrls().length,
+      discovery: usedFallback ? "fallback" : "named-assets",
+    };
+  }
+
+  function codexSettingStorageFromModule(module, assetPrefix = "") {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    const functionSource = (candidate) => {
+      if (typeof candidate !== "function") return "";
+      try { return String(candidate); } catch { return ""; }
+    };
+    const getSettingByCapability = () => values.find((candidate) => {
+      const source = functionSource(candidate);
+      return source.includes("get-setting") && source.includes("params") && source.includes("key");
+    });
+    const setSettingByCapability = () => values.find((candidate) => {
+      const source = functionSource(candidate);
+      return source.includes("set-setting") && source.includes("params") && source.includes("key");
+    });
+    let getSetting = null;
+    let setSetting = null;
+    if (assetPrefix.startsWith("setting-storage-")) {
+      getSetting = typeof module?.n === "function" ? module.n : getSettingByCapability();
+      setSetting = typeof module?.s === "function" ? module.s : setSettingByCapability();
+    } else if (assetPrefix.startsWith("app-initial-")) {
+      getSetting = typeof module?.jut === "function" ? module.jut : getSettingByCapability();
+      setSetting = typeof module?.Put === "function" ? module.Put : setSettingByCapability();
+    } else {
+      getSetting = getSettingByCapability();
+      setSetting = setSettingByCapability();
+    }
+    return typeof getSetting === "function" && typeof setSetting === "function"
+      ? { n: getSetting, s: setSetting, assetPrefix }
+      : null;
   }
 
   async function codexSettingStorageModule() {
-    const module = await loadCodexAppModule("setting-storage-");
-    if (typeof module.n !== "function" || typeof module.s !== "function") {
-      throw new Error("Codex setting-storage 接口不可用");
+    const errors = [];
+    for (const assetPrefix of ["setting-storage-", "app-initial-"]) {
+      try {
+        const module = await loadCodexAppModule(assetPrefix);
+        const settingStorage = codexSettingStorageFromModule(module, assetPrefix);
+        if (settingStorage) return settingStorage;
+        errors.push(`${assetPrefix}: setting exports unavailable`);
+      } catch (error) {
+        errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+      }
     }
-    return module;
+    throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
   }
 
   async function getCodexServiceTierSetting() {
@@ -2200,7 +2260,7 @@
       try {
         let dispatcher = null;
         let assetPrefix = "";
-        for (const candidatePrefix of ["setting-storage-", "vscode-api-"]) {
+        for (const candidatePrefix of ["setting-storage-", "app-initial-", "vscode-api-"]) {
           try {
             dispatcher = dispatcherFromModule(await loadCodexAppModule(candidatePrefix));
             if (dispatcher) {
@@ -2293,11 +2353,13 @@
   let codexPlusWorkState = "idle";
   let codexPlusWorkStateSince = 0;
   let codexPlusWorkStateResetTimer = 0;
+  let codexPlusWorkStateRefreshQueued = false;
   let codexPlusWorkStateObserver = null;
   let codexPlusWorkStateRuntimeInstalled = false;
   let codexPlusComposerMenuObserver = null;
   let codexPlusComposerMenuRepairFrame = 0;
   let codexPlusComposerMenuPositionFrame = 0;
+  let codexPlusComposerMenuLastPosition = "";
 
   function setCodexPlusTriggerLabel(trigger) {
     if (!trigger) return;
@@ -2358,13 +2420,16 @@
     if (!menu || !anchor) return;
     const anchorRect = anchor.getBoundingClientRect();
     if (anchorRect.width <= 0 || anchorRect.height <= 0) return;
-    const menuHeight = menu.getBoundingClientRect().height || 28;
+    const menuHeight = 28;
     const viewportPadding = 4;
     const preferredTop = anchorRect.bottom + 5;
     const clampedTop = Math.max(
       viewportPadding,
       Math.min(preferredTop, window.innerHeight - menuHeight - viewportPadding),
     );
+    const position = `${Math.round(anchorRect.left + anchorRect.width / 2)}:${Math.round(clampedTop)}:${clampedTop !== preferredTop}`;
+    if (position === codexPlusComposerMenuLastPosition) return;
+    codexPlusComposerMenuLastPosition = position;
     menu.style.setProperty("--codex-plus-composer-menu-left", `${anchorRect.left + anchorRect.width / 2}px`);
     menu.style.setProperty("--codex-plus-composer-menu-top", `${clampedTop}px`);
     menu.dataset.codexPlusMenuClamped = String(clampedTop !== preferredTop);
@@ -2380,14 +2445,21 @@
 
   function installCodexPlusComposerMenuObserver() {
     if (codexPlusComposerMenuObserver || !document.body) return;
-    codexPlusComposerMenuObserver = new MutationObserver(() => {
+    codexPlusComposerMenuObserver = new MutationObserver((mutations) => {
       const menu = document.getElementById(codexPlusMenuId);
       const anchor = codexPlusComposerAnchor();
-      if (!anchor || (menu && menu.parentElement === document.body)) {
-        scheduleCodexPlusComposerMenuPosition();
-        return;
-      }
-      scheduleCodexPlusComposerMenuRepair();
+    const relevant = mutations.some((mutation) => {
+      const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        if (target?.closest?.("[data-codex-composer], #codex-plus-menu")) return true;
+        return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
+          if (!(node instanceof Element)) return false;
+          return node.matches?.("[data-codex-composer], #codex-plus-menu")
+            || !!node.querySelector?.("[data-codex-composer], #codex-plus-menu");
+        });
+      });
+      if (!relevant) return;
+      if (anchor && menu?.parentElement === document.body) scheduleCodexPlusComposerMenuPosition();
+      else scheduleCodexPlusComposerMenuRepair();
     });
     codexPlusComposerMenuObserver.observe(document.body, { childList: true, subtree: true });
     window.addEventListener("resize", scheduleCodexPlusComposerMenuPosition, { passive: true });
@@ -2398,10 +2470,9 @@
     const footer = codexPlusComposerFooter();
     if (!footer) return "unknown";
     const buttons = Array.from(footer.querySelectorAll("button, [role='button']"));
-    const visible = (button) => {
-      const rect = button.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && getComputedStyle(button).visibility !== "hidden";
-    };
+    const visible = (button) => !button.hidden
+      && button.getAttribute("aria-hidden") !== "true"
+      && getComputedStyle(button).visibility !== "hidden";
     const buttonLabel = (button) => String(
       button.getAttribute("aria-label")
         || button.getAttribute("title")
@@ -2457,8 +2528,11 @@
   }
 
   function scheduleCodexPlusWorkStateRefresh() {
-    clearTimeout(codexPlusWorkStateResetTimer);
+    if (codexPlusWorkStateRefreshQueued) return;
+    codexPlusWorkStateRefreshQueued = true;
     codexPlusWorkStateResetTimer = window.setTimeout(() => {
+      codexPlusWorkStateRefreshQueued = false;
+      codexPlusWorkStateResetTimer = 0;
       const observed = codexPlusComposerWorkStatus();
       if (observed === "working") setCodexPlusWorkState("working");
       else if (observed === "failed") setCodexPlusWorkState("failed");
@@ -2467,7 +2541,7 @@
         if (observed === "idle" && Date.now() - codexPlusWorkStateSince >= 900) setCodexPlusWorkState("idle");
         else scheduleCodexPlusWorkStateRefresh();
       }
-    }, 120);
+    }, 280);
   }
 
   function installCodexPlusWorkStateRuntime() {
@@ -4797,11 +4871,94 @@
   let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
 
+  function inspectCodexAppServerClientBreakpoint(text) {
+    if (typeof text !== "string" || !text) return { location: null, reason: "empty_asset" };
+    const markerIndex = text.indexOf(codexAppServerClientCaptureMarker);
+    if (markerIndex < 0) return { location: null, reason: "marker_missing" };
+    const anchorIndex = text.lastIndexOf(codexAppServerClientCaptureAnchor, markerIndex);
+    if (anchorIndex < 0) return { location: null, reason: "anchor_missing" };
+    const anchorDistance = markerIndex - anchorIndex;
+    if (anchorDistance > 220) return { location: null, reason: "anchor_too_far", anchorDistance };
+    const braceIndex = text.indexOf("{", anchorIndex);
+    if (braceIndex < 0) return { location: null, reason: "method_body_missing", anchorDistance };
+    let lineNumber = 0;
+    let lastNewline = -1;
+    for (let index = 0; index < braceIndex; index += 1) {
+      if (text.charCodeAt(index) === 10) {
+        lineNumber += 1;
+        lastNewline = index;
+      }
+    }
+    return {
+      location: { lineNumber, columnNumber: braceIndex - lastNewline - 1 },
+      reason: "matched",
+      anchorDistance,
+    };
+  }
+
+  function locateCodexAppServerClientBreakpoint(text) {
+    return inspectCodexAppServerClientBreakpoint(text).location;
+  }
+
+  function installModelRequestPrototypePatch(prototype, version, isEnabled, getRequestMethod, hasModels, loadModels, patchResult) {
+    if (!prototype || typeof prototype.sendRequest !== "function") return false;
+    if (prototype.__codexPlusModelRequestPatch === version) return true;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, "sendRequest");
+    if (!descriptor || descriptor.writable === false || !Object.isExtensible(prototype)) return false;
+    const originalSendRequest = prototype.__codexPlusModelOriginalSendRequest || prototype.sendRequest;
+    try {
+      Object.defineProperty(prototype, "__codexPlusModelOriginalSendRequest", {
+        configurable: true,
+        value: originalSendRequest,
+      });
+      Object.defineProperty(prototype, "sendRequest", {
+        ...descriptor,
+        value: function codexPlusModelPatchedPrototypeSendRequest(method, params, options) {
+          const requestMethod = getRequestMethod(String(method || ""), params);
+          if (!isEnabled() || !["list-models-for-host", "model/list"].includes(requestMethod)) {
+            return originalSendRequest.call(this, method, params, options);
+          }
+          sendCodexPlusDiagnostic("model_app_server_request_observed", {
+            method: requestMethod,
+            customModelCatalogCount: codexPlusModelNames().length,
+            capturePath: "prototype",
+          });
+          return Promise.resolve(originalSendRequest.call(this, method, params, options)).then(async (result) => {
+            if (!hasModels()) await loadModels();
+            return patchResult(requestMethod, result);
+          });
+        },
+      });
+      Object.defineProperty(prototype, "__codexPlusModelRequestPatch", {
+        configurable: true,
+        value: version,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
     window.__codexPlusServiceTierTest = {
       applyServiceTierOverride: (method, params, threadIdHint = "") => applyCodexServiceTierRequestOverride(method, params, threadIdHint),
       requestOverride: (message) => codexServiceTierRequestOverride(message),
       diagnostics: () => [...(window.__codexPlusServiceTierTestDiagnostics || [])],
+      locateAppServerClientBreakpoint: (text) => locateCodexAppServerClientBreakpoint(text),
+      appAssetCandidateUrls: () => codexAppAssetCandidateUrls(),
+      resolveSettingStorage: (module, assetPrefix) => {
+        const resolved = codexSettingStorageFromModule(module, assetPrefix);
+        return resolved ? { assetPrefix: resolved.assetPrefix, canRead: typeof resolved.n === "function", canWrite: typeof resolved.s === "function" } : null;
+      },
+      installModelClientPrototype: (prototype, handlers) => installModelRequestPrototypePatch(
+        prototype,
+        "test-model-client-patch",
+        handlers.isEnabled,
+        handlers.getRequestMethod,
+        handlers.hasModels,
+        handlers.loadModels,
+        handlers.patchResult,
+      ),
       setModelCatalog: (catalog = {}) => {
         codexModelCatalog = {
           status: "ok",
@@ -4849,8 +5006,9 @@
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
-      .then((result) => {
+      .then(async (result) => {
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        await loadRelayProfileModelCatalogFallback();
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
@@ -4858,13 +5016,53 @@
       })
       .catch((error) => {
         codexModelCatalog = { status: "failed", message: String(error?.message || error), model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        codexModelCatalogLoadedAt = Date.now();
-        return codexModelCatalog;
+        sendCodexPlusDiagnostic("model_catalog_primary_read_failed", { error: String(error?.message || error) });
+        return loadRelayProfileModelCatalogFallback().then(() => {
+          codexModelCatalogLoadedAt = Date.now();
+          renderCodexPlusMenu();
+          scheduleCodexModelWhitelistRefresh();
+          return codexModelCatalog;
+        });
       })
       .finally(() => {
         codexModelCatalogPromise = null;
       });
     return codexModelCatalogPromise;
+  }
+
+  async function loadRelayProfileModelCatalogFallback() {
+    if (codexModelCatalog.status === "ok" && Array.isArray(codexModelCatalog.models) && codexModelCatalog.models.length) {
+      return codexModelCatalog;
+    }
+    try {
+      const settings = await postJson("/settings/get", {});
+      const profile = Array.isArray(settings?.relayProfiles)
+        ? settings.relayProfiles.find((item) => item.id === settings.activeRelayId)
+        : null;
+      const models = uniqueValues([
+        ...(typeof profile?.modelList === "string"
+          ? profile.modelList.split(/[\r\n,]+/).map((model) => model.trim()).filter(Boolean)
+          : []),
+        profile?.model,
+      ]);
+      if (models.length) {
+        codexModelCatalog = {
+          ...codexModelCatalog,
+          status: "ok",
+          model: codexModelCatalog.model || profile.model || "",
+          default_model: codexModelCatalog.default_model || models[0],
+          model_provider: profile.id || "",
+          provider_name: profile.name || profile.id || "",
+          models,
+          modelMetadata: codexModelCatalog.modelMetadata || {},
+          sources: [{ id: `relay-profile:${profile.id}`, type: "relay_profile_model_list", name: profile.name || profile.id, status: "ok", models: models.length }],
+        };
+        sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: models.length, source: "active_relay_profile" });
+      }
+    } catch (fallbackError) {
+      sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
+    }
+    return codexModelCatalog;
   }
 
   function codexPlusModelMetadata(modelName) {
@@ -5175,14 +5373,29 @@
   }
 
   function patchAppServerModelResult(method, result) {
-    if (method !== "list-models-for-host") return result;
+    if (!["list-models-for-host", "model/list"].includes(method)) return result;
     try {
-      if (Array.isArray(result)) patchModelArray(result, true);
-      if (Array.isArray(result?.data)) patchModelArray(result.data, true);
-      if (Array.isArray(result?.models)) patchModelArray(result.models, true);
+      const modelArrays = [result, result?.data, result?.models].filter(Array.isArray);
+      const beforeCounts = modelArrays.map((models) => models.length);
+      let changed = false;
+      for (const models of modelArrays) {
+        if (patchModelArray(models, true)) changed = true;
+      }
+      const afterCounts = modelArrays.map((models) => models.length);
+      const customModelCount = codexPlusModelNames().filter((name) =>
+        modelArrays.some((models) => models.some((item) => item?.model === name))
+      ).length;
       sendCodexPlusDiagnostic("model_app_server_result_patched", {
         method,
-        modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
+        modelCount: afterCounts[0] ?? null,
+      });
+      sendCodexPlusDiagnostic("model_app_server_result_patch_summary", {
+        method,
+        beforeCounts,
+        afterCounts,
+        customModelCatalogCount: codexPlusModelNames().length,
+        customModelCount,
+        changed,
       });
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
@@ -5196,23 +5409,223 @@
     if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
-    client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
-      const result = await originalSendRequest(method, params, options);
-      if (!codexPlusModelUnlockEnabled()) return result;
-      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(appServerModelRequestMethod(String(method || ""), params), result);
+    client.sendRequest = function codexPlusModelPatchedSendRequest(method, params, options) {
+      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+      if (!codexPlusModelUnlockEnabled() || !["list-models-for-host", "model/list"].includes(requestMethod)) {
+        return originalSendRequest(method, params, options);
+      }
+      sendCodexPlusDiagnostic("model_app_server_request_observed", {
+        method: requestMethod,
+        customModelCatalogCount: codexPlusModelNames().length,
+      });
+      return Promise.resolve(originalSendRequest(method, params, options)).then(async (result) => {
+        if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+        return patchAppServerModelResult(requestMethod, result);
+      });
     };
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
     return true;
   }
 
+  function patchAppServerModelRequestPrototype(klass = window.__codexPlusAppServerClientClass) {
+    if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
+    if (!codexPlusModelUnlockEnabled()) return false;
+    const prototype = klass?.prototype;
+    if (!prototype || typeof prototype.sendRequest !== "function") return false;
+    if (prototype.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) {
+      window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+      return true;
+    }
+    const installed = installModelRequestPrototypePatch(
+      prototype,
+      codexAppServerModelRequestPatchVersion,
+      codexPlusModelUnlockEnabled,
+      appServerModelRequestMethod,
+      () => codexPlusModelNames().length > 0,
+      loadCodexModelCatalog,
+      patchAppServerModelResult,
+    );
+    if (installed) {
+      window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+      window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
+      sendCodexPlusDiagnostic("model_app_server_prototype_patch_installed", {});
+      return true;
+    }
+    sendCodexPlusDiagnostic("model_app_server_prototype_patch_skipped", { reason: "send_request_not_writable" });
+    return false;
+  }
+
+  window.__codexPlusInstallAppServerClientPrototypePatch = () => patchAppServerModelRequestPrototype();
+
+  const codexAppServerClientBundleHints = ["app-shared-", "app-initial-", "app-main-", "chatg"];
+  const codexAppServerClientAssetFetchLimit = 24;
+  const codexAppServerClientCaptureRetryDelaysMs = [1000, 2000, 4000, 8000, 15000, 15000, 15000];
+  const codexAppServerClientCheckedUrls = new Set();
+  let codexAppServerClientCaptureStarted = false;
+  let codexAppServerClientCaptureAttempts = 0;
+
+  function codexAppServerClientAssetCandidateUrls() {
+    return codexAppAssetCandidateUrls()
+      .filter((url) => !codexAppServerClientCheckedUrls.has(url))
+      .sort((left, right) => {
+        const rank = (url) => {
+          const filename = (url.split("/").pop() || "").toLowerCase();
+          if (url.startsWith("blob:")) return codexAppServerClientBundleHints.length - 1;
+          const hint = codexAppServerClientBundleHints.findIndex((part) => filename.includes(part));
+          return hint < 0 ? codexAppServerClientBundleHints.length : hint;
+        };
+        return rank(left) - rank(right) || right.length - left.length;
+      })
+      .slice(0, codexAppServerClientAssetFetchLimit);
+  }
+
+  function retryCodexAppServerClientCapture() {
+    const retryDelay = codexAppServerClientCaptureRetryDelaysMs[codexAppServerClientCaptureAttempts - 1];
+    if (retryDelay === undefined) return false;
+    window.setTimeout(() => {
+      codexAppServerClientCaptureStarted = false;
+      void installCodexAppServerClientCapture();
+    }, retryDelay);
+    return true;
+  }
+
+  async function locateCodexAppServerClientInAssets() {
+    const urls = codexAppServerClientAssetCandidateUrls();
+    const loadedAssetCount = codexAppAssetCandidateUrls().length;
+    let fetchedCount = 0;
+    let markerMissCount = 0;
+    let anchorMissCount = 0;
+    sendCodexPlusDiagnostic("app_server_asset_scan_started", {
+      candidateCount: urls.length,
+      loadedAssetCount,
+      checkedCount: codexAppServerClientCheckedUrls.size,
+      attempts: codexAppServerClientCaptureAttempts,
+    });
+    const hinted = resolveCodexAppServerClientHintedUrl();
+    const ordered = hinted && !codexAppServerClientCheckedUrls.has(hinted)
+      ? [hinted, ...urls.filter((url) => url !== hinted)]
+      : urls;
+    for (const url of ordered) {
+      const asset = url.startsWith("blob:")
+        ? "blob-module"
+        : (url.split("/").pop() || "unknown-asset").split("?")[0].slice(0, 120);
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          sendCodexPlusDiagnostic("app_server_asset_candidate_checked", {
+            asset,
+            outcome: "http_error",
+            status: response.status,
+          });
+          continue;
+        }
+        const text = await response.text();
+        fetchedCount += 1;
+        const match = inspectCodexAppServerClientBreakpoint(text);
+        codexAppServerClientCheckedUrls.add(url);
+        sendCodexPlusDiagnostic("app_server_asset_candidate_checked", {
+          asset,
+          outcome: match.reason,
+          byteLength: text.length,
+          anchorDistance: match.anchorDistance ?? null,
+        });
+        if (match.reason === "marker_missing") markerMissCount += 1;
+        if (["anchor_missing", "anchor_too_far", "method_body_missing"].includes(match.reason)) anchorMissCount += 1;
+        if (match.location) {
+          const sourceUrl = url.startsWith("blob:")
+            ? text.match(/\/\/#\s*sourceURL=(\S+)/g)?.at(-1)?.replace(/^\/\/#\s*sourceURL=/, "")
+            : "";
+          const debuggerUrl = sourceUrl ? new URL(sourceUrl, url).href : url;
+          return { urls, hit: { url: debuggerUrl, candidateUrl: url, location: match.location } };
+        }
+      } catch (error) {
+        sendCodexPlusDiagnostic("app_server_asset_candidate_checked", {
+          asset,
+          outcome: "fetch_error",
+          errorName: error?.name || "Error",
+        });
+      }
+    }
+    sendCodexPlusDiagnostic("app_server_asset_scan_empty", {
+      reason: urls.length === 0 ? (loadedAssetCount === 0 ? "no_loaded_assets" : "no_new_candidates") : "no_matching_anchor",
+      candidateCount: urls.length,
+      loadedAssetCount,
+      fetchedCount,
+      markerMissCount,
+      anchorMissCount,
+      checkedCount: codexAppServerClientCheckedUrls.size,
+      attempts: codexAppServerClientCaptureAttempts,
+    });
+    return { urls, hit: null };
+  }
+
+  function resolveCodexAppServerClientHintedUrl() {
+    const diagnosticUrl = window.__codexPlusNativeFastCompiled === "v1"
+      ? window.__codexPlusNativeFastModuleDiagnostics?.url
+      : "";
+    if (typeof diagnosticUrl === "string" && diagnosticUrl) return diagnosticUrl;
+    for (const prefix of codexAppServerClientBundleHints) {
+      const url = codexAppAssetUrl(prefix);
+      if (url) return url;
+    }
+    return "";
+  }
+
+  async function installCodexAppServerClientCapture() {
+    if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture || !codexPlusModelUnlockEnabled()) return;
+    codexAppServerClientCaptureStarted = true;
+    codexAppServerClientCaptureAttempts += 1;
+    try {
+      if (typeof fetch !== "function") return;
+      const { urls, hit } = await locateCodexAppServerClientInAssets();
+      if (!hit) {
+        const retryScheduled = retryCodexAppServerClientCapture();
+        sendCodexPlusDiagnostic("app_server_asset_scan_missed", {
+          candidateCount: urls.length,
+          checkedCount: codexAppServerClientCheckedUrls.size,
+          attempts: codexAppServerClientCaptureAttempts,
+          retryScheduled,
+        });
+        if (retryScheduled) return;
+        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
+          reason: urls.length === 0 && codexAppServerClientCheckedUrls.size === 0 ? "asset_url_missing" : "anchor_missing",
+          candidateCount: urls.length,
+          checkedCount: codexAppServerClientCheckedUrls.size,
+          attempts: codexAppServerClientCaptureAttempts,
+        });
+        return;
+      }
+      const urlRegex = hit.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      window.__codexPlusAppServerClientCapture = { urlRegex, ...hit.location };
+      sendCodexPlusDiagnostic("app_server_client_capture_located", {
+        lineNumber: hit.location.lineNumber,
+        columnNumber: hit.location.columnNumber,
+        asset: (hit.url.split("/").pop() || "").split("?")[0],
+        attempts: codexAppServerClientCaptureAttempts,
+      });
+      window.__codexSessionDeleteBridge?.("codex-app-server-client-capture", {})
+        ?.catch?.(() => {});
+    } catch (error) {
+      const retryScheduled = retryCodexAppServerClientCapture();
+      sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+        retryScheduled,
+      });
+    }
+  }
+
   const appServerModelRequestPatchMaxMisses = 8;
+  const appServerModelRequestPatchRetryDelaysMs = [1000, 2000, 4000, 8000, 15000, 15000, 15000];
   let appServerModelRequestPatchMissCount = 0;
   let appServerModelRequestPatchDisabled = false;
   let appServerModelRequestPatchPromise = null;
+  let appServerModelRequestPatchNextAttemptAt = 0;
 
   function noteAppServerModelRequestPatchMiss(event, detail) {
     appServerModelRequestPatchMissCount += 1;
+    const retryDelay = appServerModelRequestPatchRetryDelaysMs[appServerModelRequestPatchMissCount - 1];
+    appServerModelRequestPatchNextAttemptAt = retryDelay === undefined ? Number.POSITIVE_INFINITY : Date.now() + retryDelay;
     if (appServerModelRequestPatchMissCount === 1) {
       sendCodexPlusDiagnostic(event, detail);
     }
@@ -5226,21 +5639,55 @@
   }
 
   function installAppServerModelRequestPatch() {
+    if (!codexPlusModelUnlockEnabled()) return;
+    void installCodexAppServerClientCapture();
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    if (patchAppServerModelRequestPrototype()) return;
+    if (window.__codexPlusAppServerClientCapture && !window.__codexPlusAppServerClientClass) return;
     if (appServerModelRequestPatchDisabled || appServerModelRequestPatchPromise) return;
+    if (Date.now() < appServerModelRequestPatchNextAttemptAt) return;
     const patch = async () => {
       try {
-        const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
+        const { modules, candidates, sources, assetUrlCount, discovery } = await loadAppServerRequestCandidates();
         if (modules.length === 0) {
+          sendCodexPlusDiagnostic("model_app_server_candidate_scan_summary", {
+            moduleCount: 0,
+            candidateCount: 0,
+            sendRequestCandidateCount: 0,
+            extensibleRequestCandidateCount: 0,
+            patchedCount: 0,
+            assetUrlCount,
+            sources,
+            discovery,
+          });
           noteAppServerModelRequestPatchMiss("model_app_server_request_patch_skipped", {
             reason: "app_server_request_assets_missing",
+            assetUrlCount,
+            sources,
+            discovery,
           });
           return;
         }
         let patchedCount = 0;
+        let sendRequestCandidateCount = 0;
+        let extensibleRequestCandidateCount = 0;
         for (const candidate of candidates) {
+          if (typeof candidate?.sendRequest === "function") {
+            sendRequestCandidateCount += 1;
+            if (Object.isExtensible(candidate)) extensibleRequestCandidateCount += 1;
+          }
           if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
         }
+        sendCodexPlusDiagnostic("model_app_server_candidate_scan_summary", {
+          moduleCount: modules.length,
+          candidateCount: candidates.length,
+          sendRequestCandidateCount,
+          extensibleRequestCandidateCount,
+          patchedCount,
+          assetUrlCount,
+          sources,
+          discovery,
+        });
         if (patchedCount > 0) {
           appServerModelRequestPatchMissCount = 0;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
@@ -5248,6 +5695,7 @@
             moduleCount: modules.length,
             candidateCount: candidates.length,
             patchedCount,
+            assetUrlCount,
             sources,
             discovery,
           });
@@ -5255,6 +5703,7 @@
           noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
             moduleCount: modules.length,
             candidateCount: candidates.length,
+            assetUrlCount,
             sources,
             discovery,
           });
@@ -6835,8 +7284,18 @@
     if (window.__codexUpstreamPendingWorktreeDispatcherPatch === patchVersion) return;
     const patch = async () => {
       try {
-        const module = await loadCodexAppModule("setting-storage-");
-        const dispatcherClass = typeof module.v === "function" && String(module.v).includes("dispatchMessage") ? module.v : null;
+        let dispatcherClass = null;
+        for (const assetPrefix of ["setting-storage-", "app-initial-"]) {
+          try {
+            const module = await loadCodexAppModule(assetPrefix);
+            const values = module && typeof module === "object" ? Object.values(module) : [];
+            dispatcherClass = values.find((candidate) => typeof candidate === "function"
+              && typeof candidate.getInstance === "function"
+              && String(candidate).includes("dispatchMessage")) || null;
+            if (dispatcherClass) break;
+          } catch {
+          }
+        }
         const dispatcher = dispatcherClass?.getInstance?.();
         if (!dispatcher || typeof dispatcher.dispatchMessage !== "function") throw new Error("Codex dispatcher unavailable");
         if (!dispatcher.__codexUpstreamWorktreeOriginalDispatchMessage) {
@@ -7941,6 +8400,8 @@
     pollId: 0,
     moObserved: false,
     observed: new WeakSet(),
+    resizeWidths: new WeakMap(),
+    alignmentCache: new WeakMap(),
     elements: new Set(),
   };
 
@@ -8261,6 +8722,9 @@
     if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds)) return;
     const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
     const delta = targetLeft - nativeRect.left;
+    const alignment = `${Math.round(nativeRect.width * 100) / 100}:${Math.round(bounds.left * 100) / 100}:${Math.round(bounds.right * 100) / 100}:${Math.round(targetLeft * 100) / 100}`;
+    if (conversationViewState.alignmentCache.get(el) === alignment) return;
+    conversationViewState.alignmentCache.set(el, alignment);
     if (Math.abs(delta) > 0.5) {
       const nextLeft = `${delta.toFixed(2)}px`;
       if (el.style.left !== nextLeft) el.style.left = nextLeft;
@@ -8320,6 +8784,8 @@
     conversationViewState.ro = null;
     conversationViewState.moObserved = false;
     conversationViewState.observed = new WeakSet();
+    conversationViewState.resizeWidths = new WeakMap();
+    conversationViewState.alignmentCache = new WeakMap();
     conversationViewState.elements.forEach(conversationViewRestoreElement);
     conversationViewState.elements.clear();
     conversationViewState.contentEl = null;
@@ -8330,8 +8796,23 @@
 
   function ensureConversationViewRuntime() {
     if (conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId) return;
-    conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
-    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    conversationViewState.ro = conversationViewState.ro || new ResizeObserver((entries) => {
+      const widthChanged = entries.some((entry) => {
+        const width = Math.round(entry.contentRect.width * 100) / 100;
+        const previousWidth = conversationViewState.resizeWidths.get(entry.target);
+        conversationViewState.resizeWidths.set(entry.target, width);
+        return previousWidth == null || previousWidth !== width;
+      });
+      if (widthChanged) scheduleConversationViewAlign();
+    });
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver((mutations) => {
+      const relevant = mutations.some((mutation) => {
+        const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        if (target?.closest?.("[data-message-author-role], [data-testid='conversation-turn'], main .prose")) return false;
+        return true;
+      });
+      if (relevant) scheduleConversationViewAlign();
+    });
     if (document.body && !conversationViewState.moObserved) {
       conversationViewState.mo.observe(document.body, {
         childList: true,

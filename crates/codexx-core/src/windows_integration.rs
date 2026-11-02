@@ -12,6 +12,8 @@ use anyhow::Context;
 #[cfg(windows)]
 use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE, HWND, LPARAM, MAX_PATH};
 #[cfg(windows)]
+use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+#[cfg(windows)]
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
     CoTaskMemFree, CoUninitialize, IPersistFile,
@@ -27,8 +29,8 @@ use windows::Win32::System::Registry::{
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW,
-    TerminateProcess,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
 };
 #[cfg(windows)]
 use windows::Win32::UI::Shell::{
@@ -46,6 +48,28 @@ use windows::core::{Interface, PCWSTR, PWSTR};
 
 #[cfg(windows)]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(windows)]
+pub fn current_process_is_elevated() -> bool {
+    let mut token = HANDLE::default();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.is_err() {
+        return false;
+    }
+    let _guard = HandleGuard(token);
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned = 0;
+    unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some((&mut elevation as *mut TOKEN_ELEVATION).cast()),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    }
+    .is_ok()
+        && elevation.TokenIsElevated != 0
+}
 
 #[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]

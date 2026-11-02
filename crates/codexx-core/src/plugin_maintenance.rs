@@ -26,13 +26,18 @@ pub fn inspect_plugin_configuration(home: &Path) -> anyhow::Result<PluginMainten
         ..Default::default()
     };
     if !report.config_exists {
-        report.issues.push("未找到 config.toml，尚未建立插件配置。".to_string());
+        report
+            .issues
+            .push("未找到 config.toml，尚未建立插件配置。".to_string());
         return Ok(report);
     }
 
     let contents = std::fs::read_to_string(&config_path)
         .with_context(|| format!("读取 {} 失败", config_path.display()))?;
-    let document = match contents.trim_start_matches('\u{feff}').parse::<DocumentMut>() {
+    let document = match contents
+        .trim_start_matches('\u{feff}')
+        .parse::<DocumentMut>()
+    {
         Ok(document) => document,
         Err(error) => {
             report.issues.push(format!("config.toml 无法解析：{error}"));
@@ -79,7 +84,9 @@ pub fn repair_plugin_configuration(home: &Path) -> anyhow::Result<PluginMaintena
     Ok(report)
 }
 
-pub fn restore_latest_plugin_configuration_backup(home: &Path) -> anyhow::Result<PluginMaintenanceReport> {
+pub fn restore_latest_plugin_configuration_backup(
+    home: &Path,
+) -> anyhow::Result<PluginMaintenanceReport> {
     let config_path = home.join("config.toml");
     let backup_path = latest_backup(&config_path)
         .ok_or_else(|| anyhow::anyhow!("没有找到可恢复的 CodexGO 插件配置备份"))?;
@@ -111,7 +118,9 @@ fn inspect_context_table(
         return;
     };
     let Some(table) = item.as_table() else {
-        report.issues.push(format!("[{table_name}] 不是有效的 TOML 表。"));
+        report
+            .issues
+            .push(format!("[{table_name}] 不是有效的 TOML 表。"));
         return;
     };
     if is_plugin_table {
@@ -121,15 +130,24 @@ fn inspect_context_table(
     }
     for (id, item) in table.iter() {
         let Some(entry) = item.as_table() else {
-            report.issues.push(format!("{table_name}.{id} 不是有效的 TOML 表。"));
+            report
+                .issues
+                .push(format!("{table_name}.{id} 不是有效的 TOML 表。"));
             continue;
         };
         if is_plugin_table {
             if entry.get("enabled").is_none() {
-                report.issues.push(format!("插件 {id} 缺少 enabled 状态，修复时会默认设为 true。"));
+                report.issues.push(format!(
+                    "插件 {id} 缺少 enabled 状态，修复时会默认设为 true。"
+                ));
             }
-            if entry.get("enabled").is_some_and(|value| value.as_bool().is_none()) {
-                report.issues.push(format!("插件 {id} 的 enabled 不是布尔值。"));
+            if entry
+                .get("enabled")
+                .is_some_and(|value| value.as_bool().is_none())
+            {
+                report
+                    .issues
+                    .push(format!("插件 {id} 的 enabled 不是布尔值。"));
             }
             if entry.get("enabled").and_then(Item::as_bool).unwrap_or(true) {
                 report.enabled_plugin_count += 1;
@@ -156,19 +174,41 @@ fn latest_backup(config_path: &Path) -> Option<PathBuf> {
     backups.pop()
 }
 
-fn inspect_marketplace_source(id: &str, table: &Table, report: &mut PluginMaintenanceReport, home: &Path) {
-    let source_type = table.get("source_type").and_then(Item::as_str).unwrap_or_default();
-    let source = table.get("source").and_then(Item::as_str).unwrap_or_default();
+fn inspect_marketplace_source(
+    id: &str,
+    table: &Table,
+    report: &mut PluginMaintenanceReport,
+    home: &Path,
+) {
+    let source_type = table
+        .get("source_type")
+        .and_then(Item::as_str)
+        .unwrap_or_default();
+    let source = table
+        .get("source")
+        .and_then(Item::as_str)
+        .unwrap_or_default();
     if source_type == "local" && source.trim().is_empty() {
-        report.issues.push(format!("市场 {id} 声明为 local，但没有 source 路径。"));
-    } else if source_type == "local" && !is_remote_source(source) && !resolve_local_source(home, source).exists() {
-        report.issues.push(format!("市场 {id} 的本地目录不存在：{source}"));
+        report
+            .issues
+            .push(format!("市场 {id} 声明为 local，但没有 source 路径。"));
+    } else if source_type == "local"
+        && !is_remote_source(source)
+        && !resolve_local_source(home, source).exists()
+    {
+        report
+            .issues
+            .push(format!("市场 {id} 的本地目录不存在：{source}"));
     }
 }
 
 fn resolve_local_source(home: &Path, source: &str) -> PathBuf {
     let path = PathBuf::from(source);
-    if path.is_absolute() { path } else { home.join(path) }
+    if path.is_absolute() {
+        path
+    } else {
+        home.join(path)
+    }
 }
 
 fn is_remote_source(value: &str) -> bool {
@@ -179,8 +219,7 @@ fn is_remote_source(value: &str) -> bool {
 fn create_backup(path: &Path) -> anyhow::Result<PathBuf> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let backup = path.with_file_name(format!("config.toml.codexgo-backup-{timestamp}"));
-    std::fs::copy(path, &backup)
-        .with_context(|| format!("创建 {} 备份失败", path.display()))?;
+    std::fs::copy(path, &backup).with_context(|| format!("创建 {} 备份失败", path.display()))?;
     Ok(backup)
 }
 
@@ -231,7 +270,10 @@ source = "/path/that/does/not/exist"
         let report = repair_plugin_configuration(temp.path()).unwrap();
         assert!(report.backup_path.is_some());
         assert!(Path::new(report.backup_path.as_ref().unwrap()).is_file());
-        assert_eq!(std::fs::read_to_string(config).unwrap(), "[plugins.browser]\nenabled = true\n");
+        assert_eq!(
+            std::fs::read_to_string(config).unwrap(),
+            "[plugins.browser]\nenabled = true\n"
+        );
     }
 
     #[test]
@@ -243,7 +285,11 @@ source = "/path/that/does/not/exist"
         assert_eq!(before.issues.len(), 1);
         let after = repair_plugin_configuration(temp.path()).unwrap();
         assert!(after.issues.is_empty());
-        assert!(std::fs::read_to_string(config).unwrap().contains("enabled = true"));
+        assert!(
+            std::fs::read_to_string(config)
+                .unwrap()
+                .contains("enabled = true")
+        );
     }
 
     #[test]
@@ -251,9 +297,17 @@ source = "/path/that/does/not/exist"
         let temp = tempfile::tempdir().unwrap();
         let config = temp.path().join("config.toml");
         std::fs::write(&config, "[plugins.current]\nenabled = true\n").unwrap();
-        std::fs::write(temp.path().join("config.toml.codexgo-backup-1"), "[plugins.old]\nenabled = true\n").unwrap();
+        std::fs::write(
+            temp.path().join("config.toml.codexgo-backup-1"),
+            "[plugins.old]\nenabled = true\n",
+        )
+        .unwrap();
         let report = restore_latest_plugin_configuration_backup(temp.path()).unwrap();
         assert_eq!(report.plugin_count, 1);
-        assert!(std::fs::read_to_string(config).unwrap().contains("plugins.old"));
+        assert!(
+            std::fs::read_to_string(config)
+                .unwrap()
+                .contains("plugins.old")
+        );
     }
 }

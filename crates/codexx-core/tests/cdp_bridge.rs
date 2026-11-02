@@ -412,6 +412,11 @@ fn injection_script_unlocks_custom_model_catalog() {
     let script = assets::injection_script(58321);
 
     assert!(script.contains("/codex-model-catalog"));
+    assert!(script.contains("model_catalog_fallback_applied"));
+    assert!(script.contains("loadRelayProfileModelCatalogFallback"));
+    assert!(script.contains("/settings/get"));
+    assert!(script.contains("codexModelCatalog.status === \"ok\""));
+    assert!(script.contains("profile.modelList"));
     assert!(script.contains("codexModelCatalog"));
     assert!(script.contains("patchModelArray"));
     assert!(script.contains("patchStatsigModelDynamicConfig"));
@@ -429,6 +434,9 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("modelJsonResponseLooksPatchable"));
     assert!(script.contains("codexPlusModelMetadata"));
     assert!(script.contains("refreshCodexModelWhitelistFromScan"));
+    assert!(script.contains("codexAppServerClientCaptureMarker"));
+    assert!(script.contains("codex-app-server-client-capture"));
+    assert!(script.contains("__codexPlusInstallAppServerClientPrototypePatch"));
     assert!(!script.contains("querySelectorAll(\"button, [role='menu']"));
 }
 
@@ -561,6 +569,32 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["startConversation"]["serviceTier"], "priority");
 }
 
+#[test]
+fn injection_script_captures_hidden_client_and_patches_only_model_lists() {
+    let cases = run_service_tier_contract_harness();
+
+    assert_eq!(cases["captureLocation"]["lineNumber"], 1);
+    assert_eq!(cases["captureLocation"]["columnNumber"], 20);
+    assert_eq!(cases["missingCaptureLocation"], serde_json::Value::Null);
+    assert!(cases["clientPatched"].as_bool().unwrap());
+    assert!(!cases["frozenClientPatched"].as_bool().unwrap());
+    assert_eq!(
+        cases["fastAssetCandidates"][0],
+        "app://-/assets/app-initial-fast.js"
+    );
+    assert_eq!(
+        cases["settingStorageFallback"]["assetPrefix"],
+        "app-initial-"
+    );
+    assert_eq!(cases["settingStorageFallback"]["canRead"], true);
+    assert_eq!(cases["settingStorageFallback"]["canWrite"], true);
+    assert_eq!(cases["modelListResult"]["patched"], "model/list");
+    assert_eq!(cases["ordinaryResult"]["patched"], serde_json::Value::Null);
+    assert_eq!(cases["ordinaryResult"]["instanceId"], "client-17");
+    assert_eq!(cases["modelListResult"]["options"]["source"], "test");
+    assert_eq!(cases["disabledResult"]["patched"], serde_json::Value::Null);
+}
+
 fn run_service_tier_contract_harness() -> serde_json::Value {
     let temp = tempfile::tempdir().expect("temp dir should be created");
     let script_path = temp.path().join("renderer-inject.js");
@@ -620,6 +654,55 @@ require(scriptPath);
 const api = window.__codexPlusServiceTierTest;
 api.setServiceTierState({{ serviceTier: "priority", fastTierValue: "priority" }});
 api.setModelCatalog({{ status: "ok", model: "gpt-5.4", default_model: "gpt-5.4", models: ["gpt-5.4", "gpt-5.5"] }});
+const captureLocation = api.locateAppServerClientBreakpoint('// 中文😀\nasync sendRequest() {{ throw new Error("AppServerRequestClient is missing a message dispatcher"); }}');
+window.__codexPlusNativeFastCompiled = "v1";
+window.__codexPlusNativeFastModuleDiagnostics = {{ url: "app://-/assets/app-initial-fast.js" }};
+const fastAssetCandidates = api.appAssetCandidateUrls();
+const settingStorageFallback = api.resolveSettingStorage({{
+  jut: async function getSetting() {{}},
+  Put: async function setSetting() {{}},
+}}, "app-initial-");
+class TestClient {{
+  constructor(id) {{ this.id = id; }}
+  async sendRequest(method, params, options) {{
+    return {{ method, params, options, instanceId: this.id, patched: null }};
+  }}
+}}
+const clientCases = (async () => {{
+const missingCaptureLocation = api.locateAppServerClientBreakpoint("async sendRequest() {{ return true; }}");
+const clientPatched = api.installModelClientPrototype(TestClient.prototype, {{
+  isEnabled: () => true,
+  getRequestMethod: (method) => method,
+  hasModels: () => true,
+  loadModels: async () => {{}},
+  patchResult: (method, result) => ({{ ...result, patched: method }}),
+}});
+const modelListResult = await new TestClient("client-17").sendRequest("model/list", {{}}, {{ source: "test" }});
+const ordinaryResult = await new TestClient("client-17").sendRequest("thread/read", {{}}, {{ source: "test" }});
+class DisabledClient {{
+  async sendRequest(method, params, options) {{
+    return {{ method, params, options, instanceId: "client-18", patched: null }};
+  }}
+}}
+api.installModelClientPrototype(DisabledClient.prototype, {{
+  isEnabled: () => false,
+  getRequestMethod: (method) => method,
+  hasModels: () => true,
+  loadModels: async () => {{}},
+  patchResult: (method, result) => ({{ ...result, patched: method }}),
+}});
+const disabledResult = await new DisabledClient("client-18").sendRequest("model/list", {{}}, {{}});
+class FrozenClient {{ async sendRequest() {{ return {{}}; }} }}
+Object.freeze(FrozenClient.prototype);
+const frozenClientPatched = api.installModelClientPrototype(FrozenClient.prototype, {{
+  isEnabled: () => true,
+  getRequestMethod: (method) => method,
+  hasModels: () => true,
+  loadModels: async () => {{}},
+  patchResult: (method, result) => result,
+}});
+return {{ captureLocation, missingCaptureLocation, clientPatched, modelListResult, ordinaryResult, disabledResult, frozenClientPatched, fastAssetCandidates, settingStorageFallback }};
+}})();
 
 api.setThreadState({{ mode: "global-fast", defaultMode: "fast", entries: {{}} }});
 const supportedFast = api.applyServiceTierOverride("turn/start", {{
@@ -656,14 +739,15 @@ const startConversation = api.requestOverride({{
   model: "gpt-5.5",
 }});
 
-process.stdout.write(JSON.stringify({{
+clientCases.then((results) => process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
   turnWithoutModel,
   turnWithoutModelDiagnosticModel,
   customInheritUnsupported,
   startConversation,
-}}));
+  ...results,
+}})));
 "#,
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
             .expect("script path should serialize")
@@ -1044,7 +1128,10 @@ fn injection_script_keeps_codexgo_trigger_stably_anchored_in_composer() {
     assert!(script.contains("window.innerHeight - menuHeight - viewportPadding"));
     assert!(script.contains("--codex-plus-composer-menu-left"));
     assert!(script.contains("--codex-plus-composer-menu-top"));
-    assert!(script.contains("menu.parentElement === document.body"));
+    assert!(
+        script.contains("menu.parentElement === document.body")
+            || script.contains("menu?.parentElement === document.body")
+    );
     assert!(script.contains("height: 28px !important"));
     assert!(script.contains("codexPlusComposerMenuObserver"));
     assert!(script.contains("codexPlusMenuVersion = \"8\""));

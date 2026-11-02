@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 #[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
@@ -59,12 +58,7 @@ pub fn disable_watcher() -> std::io::Result<()> {
 }
 
 pub fn cdp_listening(port: u16) -> bool {
-    [
-        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
-        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
-    ]
-    .into_iter()
-    .any(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok())
+    crate::cdp::endpoint_available(port)
 }
 
 pub fn build_spawn_launcher_command(launcher_path: &str, debug_port: u16) -> Vec<String> {

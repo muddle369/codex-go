@@ -41,7 +41,7 @@ const GLASS_VISION_RENDERER: &str =
     include_str!("../../../assets/inject/upstream/glass-vision/renderer-inject.js");
 const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/feng-alipay.JPG");
 const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/feng-wechat.JPG");
-pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
+pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20261102-model-1";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -321,6 +321,33 @@ mod tests {
         assert!(script.contains("appServerModelRequestPatchPromise"));
         assert!(script.contains("noteAppServerModelRequestPatchMiss"));
         assert!(script.contains("return window.__codexSessionDeleteBridge"));
+    }
+
+    #[test]
+    fn renderer_injection_reports_model_discovery_and_patch_stages() {
+        let script = injection_script(58321);
+
+        for event in [
+            "app_server_asset_candidate_checked",
+            "app_server_asset_scan_empty",
+            "model_app_server_candidate_scan_summary",
+            "model_app_server_request_observed",
+            "model_app_server_result_patch_summary",
+            "app_server_client_capture_located",
+        ] {
+            assert!(script.contains(event), "missing diagnostic event: {event}");
+        }
+    }
+
+    #[test]
+    fn renderer_injection_discovers_modern_codex_assets_and_setting_fallbacks() {
+        let script = injection_script(58321);
+
+        assert!(script.contains("__codexPlusNativeFastModuleDiagnostics?.url"));
+        assert!(script.contains("app-shared-"));
+        assert!(script.contains("app-initial-"));
+        assert!(script.contains("resolveCodexAppServerClientHintedUrl"));
+        assert!(script.contains("codexSettingStorageFromModule"));
     }
 
     #[test]
