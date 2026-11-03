@@ -2401,29 +2401,45 @@ function LaunchPanel({
             ) : null}
           </div>
           {showQuickConfig ? (
-            <fieldset className="launch-model-families" disabled={quickConfigBusy}>
-              <legend>同步模型</legend>
-              <label>
-                <input type="checkbox" checked={quickModelFamilies.gpt} disabled readOnly />
-                <span>GPT</span>
-                <small>必选</small>
-              </label>
-              {(["claude", "gemini", "grok"] as const).map((family) => {
-                const label = family === "claude" ? "Claude" : family === "gemini" ? "Gemini" : "Grok";
-                return (
-                  <label key={family}>
-                    <input
-                      type="checkbox"
-                      checked={quickModelFamilies[family]}
-                      onChange={(event) => onQuickModelFamilyChange(family, event.currentTarget.checked)}
-                    />
-                    <span>{label}</span>
-                  </label>
-                );
-              })}
-            </fieldset>
+            <div className="launch-model-row">
+              <fieldset className="launch-model-families" disabled={quickConfigBusy}>
+                <legend>同步模型</legend>
+                <label>
+                  <input type="checkbox" checked={quickModelFamilies.gpt} disabled readOnly />
+                  <span>GPT</span>
+                  <small>必选</small>
+                </label>
+                {(["claude", "gemini", "grok"] as const).map((family) => {
+                  const label = family === "claude" ? "Claude" : family === "gemini" ? "Gemini" : "Grok";
+                  return (
+                    <label key={family}>
+                      <input
+                        type="checkbox"
+                        checked={quickModelFamilies[family]}
+                        onChange={(event) => onQuickModelFamilyChange(family, event.currentTarget.checked)}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  );
+                })}
+              </fieldset>
+              <div
+                className="launch-config-busy"
+                data-busy={quickConfigBusy}
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                title={quickConfigBusy ? "正在保存并应用快捷配置…" : undefined}
+              >
+                {quickConfigBusy ? (
+                  <>
+                    <RefreshCw className="animate-spin" aria-hidden="true" />
+                    <span>正在保存并应用快捷配置…</span>
+                  </>
+                ) : null}
+              </div>
+            </div>
           ) : null}
-          {quickConfigBusy ? <p className="launch-config-busy">正在保存并应用快捷配置…</p> : null}
         </div>
         <div className={`launch-operation-card ${showQuickConfig ? "" : "launch-operation-card-single"}`}>
           {showQuickConfig ? (

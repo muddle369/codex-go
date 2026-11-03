@@ -41,6 +41,7 @@ const GLASS_VISION_RENDERER: &str =
     include_str!("../../../assets/inject/upstream/glass-vision/renderer-inject.js");
 const SPONSOR_ALIPAY: &[u8] = include_bytes!("../../../assets/images/feng-alipay.JPG");
 const SPONSOR_WECHAT: &[u8] = include_bytes!("../../../assets/images/feng-wechat.JPG");
+const PRODUCT_LOGO: &[u8] = include_bytes!("../../../assets/images/codex-go-png.png");
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20261102-model-1";
 
 pub fn renderer_script() -> &'static str {
@@ -75,9 +76,11 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let stepwise = stepwise_config(settings);
     let dream_skin_runtime = dream_skin_runtime_script(settings);
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN__ = {};\nwindow.__CODEX_PLUS_COMPOSER_COMPANION__ = {};\nwindow.__CODEX_PLUS_STEPWISE__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\n{}\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_SPONSOR_IMAGES__ = {};\nwindow.__CODEX_PLUS_LOGO__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN__ = {};\nwindow.__CODEX_PLUS_COMPOSER_COMPANION__ = {};\nwindow.__CODEX_PLUS_STEPWISE__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\n{}\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(&sponsor_images).expect("sponsor images should serialize"),
+        serde_json::to_string(&image_data_uri("image/png", PRODUCT_LOGO))
+            .expect("product logo should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         serde_json::to_string(DIAGNOSTIC_BUILD_ID).expect("build id should serialize"),
         serde_json::to_string(&image_overlay).expect("image overlay config should serialize"),

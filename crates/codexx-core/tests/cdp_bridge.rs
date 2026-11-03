@@ -1113,32 +1113,41 @@ fn injection_script_uses_generic_app_server_discovery_and_electron_bridge() {
 }
 
 #[test]
-fn injection_script_keeps_codexgo_trigger_stably_anchored_in_composer() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("codexPlusComposerFooter"));
-    assert!(script.contains("codexPlusComposerAnchor"));
-    assert!(script.contains("codex-plus-status-line"));
-    assert!(script.contains("codex-plus-status-line::after"));
-    assert!(script.contains("codex-plus-status-marker-travel"));
-    assert!(script.contains("codex-plus-status-marker-complete"));
-    assert!(script.contains("data-completion=\"true\""));
-    assert!(script.contains("position: fixed !important"));
-    assert!(script.contains("anchorRect.bottom + 5"));
-    assert!(script.contains("window.innerHeight - menuHeight - viewportPadding"));
-    assert!(script.contains("--codex-plus-composer-menu-left"));
-    assert!(script.contains("--codex-plus-composer-menu-top"));
+fn injection_script_keeps_sidebar_badge_above_controls_without_update_button() {
+    let temp = tempfile::tempdir().unwrap();
+    let script_path = temp.path().join("renderer-inject.js");
+    std::fs::write(&script_path, assets::renderer_script()).unwrap();
+    let output = Command::new("node")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/sidebar_menu_harness.cjs"
+        ))
+        .arg(script_path)
+        .output()
+        .expect("node should run sidebar badge tests");
     assert!(
-        script.contains("menu.parentElement === document.body")
-            || script.contains("menu?.parentElement === document.body")
+        output.status.success(),
+        "sidebar badge tests failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(script.contains("height: 28px !important"));
-    assert!(script.contains("codexPlusComposerMenuObserver"));
-    assert!(script.contains("codexPlusMenuVersion = \"8\""));
-    assert!(script.contains("installCodexPlusComposerMenu"));
-    assert!(script.contains("codexPlusWorkState"));
-    assert!(script.contains("text-secondary"));
-    assert!(script.contains("rgba(142, 142, 160, .95)"));
+}
+
+#[test]
+fn injection_script_embeds_logo_from_bundled_png() {
+    let script = assets::injection_script(57321);
+    let assignment = script
+        .lines()
+        .find_map(|line| line.strip_prefix("window.__CODEX_PLUS_LOGO__ = "))
+        .expect("the injected badge must receive its bundled logo");
+    let uri: String = serde_json::from_str(assignment.trim_end_matches(';')).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(uri.strip_prefix("data:image/png;base64,").unwrap())
+        .unwrap();
+    assert_eq!(
+        bytes,
+        include_bytes!("../../../assets/images/codex-go-png.png")
+    );
 }
 
 #[tokio::test]

@@ -2759,6 +2759,7 @@ body {
   border: 1px solid hsl(var(--border));
   border-radius: 18px;
   background: hsl(var(--surface-raised) / 0.72);
+  container-type: inline-size;
 }
 
 .launch-config-header-hint {
@@ -2836,8 +2837,17 @@ body {
   color: hsl(var(--foreground));
 }
 
+.launch-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 220px);
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
 .launch-model-families {
-  margin: 14px 0 0;
+  min-width: 0;
+  margin: 0;
   padding: 0;
   display: flex;
   align-items: center;
@@ -2942,9 +2952,40 @@ body {
 }
 
 .launch-config-busy {
-  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  height: 20px;
+  visibility: hidden;
   color: hsl(var(--muted-foreground));
   font-size: 12px;
+  line-height: 20px;
+}
+
+.launch-config-busy[data-busy="true"] {
+  visibility: visible;
+}
+
+.launch-config-busy svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
+.launch-config-busy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container (max-width: 620px) {
+  .launch-model-row {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 4px;
+  }
 }
 
 .launch-action-primary-wrap {

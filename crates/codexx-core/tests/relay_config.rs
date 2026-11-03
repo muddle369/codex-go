@@ -478,6 +478,133 @@ experimental_bearer_token = "sk-a"
 }
 
 #[test]
+fn relay_file_switch_preserves_live_sandbox_settings_over_template_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    let original = r#"model = "old"
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+network_access = false
+writable_roots = ["C:\\work"]
+
+[windows]
+sandbox = "unelevated"
+sandbox_private_desktop = true
+"#;
+    std::fs::write(temp.path().join("config.toml"), original).unwrap();
+
+    let result = apply_relay_files_to_home(
+        temp.path(),
+        r#"model = "new"
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+
+[sandbox_workspace_write]
+network_access = true
+exclude_tmpdir_env_var = true
+
+[windows]
+sandbox = "elevated"
+template_option = true
+"#,
+        "{}",
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["model"].as_str(), Some("new"));
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("workspace-write"));
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+    assert_eq!(
+        parsed["sandbox_workspace_write"]["network_access"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        parsed["sandbox_workspace_write"]["writable_roots"][0].as_str(),
+        Some("C:\\work")
+    );
+    assert_eq!(
+        parsed["sandbox_workspace_write"]["exclude_tmpdir_env_var"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(parsed["windows"]["sandbox"].as_str(), Some("unelevated"));
+    assert_eq!(
+        parsed["windows"]["sandbox_private_desktop"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(parsed["windows"]["template_option"].as_bool(), Some(true));
+    assert_eq!(
+        std::fs::read_to_string(
+            std::path::Path::new(result.backup_path.as_ref().unwrap()).join("config.toml")
+        )
+        .unwrap(),
+        original
+    );
+}
+
+#[test]
+fn relay_config_only_switch_preserves_live_sandbox_settings_and_auth() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "model = \"old\"\n[windows]\nsandbox = \"unelevated\"\n",
+    )
+    .unwrap();
+    std::fs::write(temp.path().join("auth.json"), "{\"old\":true}").unwrap();
+
+    codexx_core::relay_config::apply_relay_config_file_to_home(temp.path(), "model = \"new\"\n")
+        .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["model"].as_str(), Some("new"));
+    assert_eq!(parsed["windows"]["sandbox"].as_str(), Some("unelevated"));
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+        "{\"old\":true}"
+    );
+}
+
+#[test]
+fn quick_provider_write_preserves_live_sandbox_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "approval_policy = \"on-request\"\n[windows]\nsandbox = \"unelevated\"\n",
+    )
+    .unwrap();
+
+    codexx_core::relay_config::apply_relay_config_to_home(
+        temp.path(),
+        "https://relay.example/v1",
+        "test-token",
+    )
+    .unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["model_provider"].as_str(), Some("custom"));
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+    assert_eq!(parsed["windows"]["sandbox"].as_str(), Some("unelevated"));
+}
+
+#[test]
+fn relay_file_switch_can_replace_invalid_live_config_without_inventing_sandbox_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("config.toml"), "model = [").unwrap();
+
+    apply_relay_files_to_home(temp.path(), "model = \"new\"\n", "{}").unwrap();
+
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["model"].as_str(), Some("new"));
+    assert!(parsed.get("windows").is_none());
+    assert!(parsed.get("sandbox_mode").is_none());
+}
+
+#[test]
 fn apply_relay_files_allows_empty_isolated_auth_json() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("auth.json"), r#"{"OPENAI_API_KEY":"old"}"#).unwrap();

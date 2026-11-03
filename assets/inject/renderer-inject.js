@@ -41,7 +41,7 @@
   const chatsSortRefreshIntervalMs = 1500;
   const chatsSortDbRefreshIntervalMs = 5000;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "14";
+  const codexDeleteStyleVersion = "15";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusDisplayName = "CodexGO";
@@ -784,51 +784,82 @@
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      #${codexPlusMenuId}.codex-plus-composer-menu {
+      #${codexPlusMenuId}.codex-plus-sidebar-menu {
         position: fixed !important;
-        left: var(--codex-plus-composer-menu-left, 50%) !important;
+        left: var(--codex-plus-sidebar-menu-left, 8px) !important;
         right: auto !important;
-        top: var(--codex-plus-composer-menu-top, auto) !important;
+        top: var(--codex-plus-sidebar-menu-top, 0) !important;
         bottom: auto !important;
-        transform: translateX(-50%) !important;
+        transform: none !important;
         z-index: 2147483645 !important;
         display: inline-flex !important;
-        width: max-content !important;
-        height: 28px !important;
-        min-height: 28px !important;
-        max-height: 28px !important;
+        width: 36px !important;
+        height: auto !important;
         flex: 0 0 auto !important;
         align-items: center;
         justify-content: center;
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      .codex-plus-composer-trigger {
+      #${codexPlusMenuId}.codex-plus-sidebar-menu[hidden] {
+        display: none !important;
+      }
+      .codex-plus-sidebar-trigger {
         display: inline-flex;
         flex-direction: column;
         align-items: center;
         justify-content: flex-start;
-        gap: 2px;
-        width: max-content;
+        gap: 0;
+        box-sizing: border-box;
+        width: 36px;
         min-width: 0;
-        height: 28px !important;
-        min-height: 28px !important;
-        max-height: 28px !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+        margin: 0;
         padding: 0;
         border: 0;
         background: transparent;
-        color: var(--text-secondary, var(--token-text-secondary, rgba(142, 142, 160, .95))) !important;
-        font: 12px/14px system-ui, sans-serif;
+        box-shadow: none;
+        color: var(--color-text-secondary, var(--text-secondary, var(--token-text-secondary, rgba(142, 142, 160, .95)))) !important;
+        font: 9px/11px system-ui, sans-serif;
         white-space: nowrap;
         cursor: pointer;
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
-      .codex-plus-composer-trigger:hover,
-      .codex-plus-composer-trigger:hover .codex-plus-trigger-label {
-        color: var(--text-secondary, var(--token-text-secondary, rgba(142, 142, 160, .95))) !important;
+      .codex-plus-sidebar-trigger:hover {
+        background: transparent;
+        color: var(--color-text-secondary, var(--text-secondary, var(--token-text-secondary, rgba(142, 142, 160, .95)))) !important;
+      }
+      .codex-plus-sidebar-trigger:focus-visible {
+        outline: 2px solid var(--ring, #8b7cff);
+        outline-offset: 3px;
+        border-radius: 4px;
       }
       .codex-plus-trigger-label { line-height: 14px; }
+      .codex-plus-sidebar-logo {
+        display: block;
+        flex: 0 0 24px;
+        width: 24px;
+        height: 24px;
+        object-fit: contain;
+        pointer-events: none;
+      }
+      .codex-plus-sidebar-trigger .codex-plus-trigger-label {
+        margin-top: 5px;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: inherit;
+        font: 9px/11px system-ui, sans-serif;
+      }
+      .codex-plus-sidebar-trigger .codex-plus-status-line {
+        align-self: center;
+        width: 24px;
+        min-width: 24px;
+        margin-top: 2px;
+      }
       .codex-plus-status-line {
         position: relative;
         overflow: hidden;
@@ -860,7 +891,7 @@
       .codex-plus-status-line[data-status="waiting"] { background: #fbbf24; box-shadow: 0 0 7px rgba(251,191,36,.45); animation: codex-plus-status-line-pulse 1.2s ease-in-out infinite; }
       .codex-plus-status-line[data-status="failed"] { background: #ef4444; box-shadow: 0 0 7px rgba(239,68,68,.5); }
       .codex-plus-status-line[data-status="idle"] { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,.4); }
-      .codex-plus-status-line[data-completion="true"]::after { opacity: 1; animation: codex-plus-status-marker-complete .42s ease-out forwards; }
+      .codex-plus-status-line[data-status="idle"][data-completion="true"]::after { opacity: 1; animation: codex-plus-status-marker-complete .42s ease-out forwards; }
       @keyframes codex-plus-status-line-flow { from { background-position: 0 0; } to { background-position: 200% 0; } }
       @keyframes codex-plus-status-marker-travel { from { left: 0; } to { left: calc(100% - 3px); } }
       @keyframes codex-plus-status-marker-complete { 0% { transform: translateX(0) scale(1); opacity: 1; box-shadow: 0 0 5px rgba(255,255,255,.9); } 45% { transform: translateX(0) scale(2.2); opacity: 1; box-shadow: 0 0 9px rgba(255,255,255,1); } 100% { transform: translateX(0) scale(1); opacity: 0; box-shadow: 0 0 0 rgba(255,255,255,0); } }
@@ -2355,11 +2386,15 @@
   let codexPlusWorkStateResetTimer = 0;
   let codexPlusWorkStateRefreshQueued = false;
   let codexPlusWorkStateObserver = null;
+  let codexPlusWorkStateFooter = null;
   let codexPlusWorkStateRuntimeInstalled = false;
-  let codexPlusComposerMenuObserver = null;
-  let codexPlusComposerMenuRepairFrame = 0;
-  let codexPlusComposerMenuPositionFrame = 0;
-  let codexPlusComposerMenuLastPosition = "";
+  let codexPlusSidebarMenuObserver = null;
+  let codexPlusSidebarMenuResizeObserver = null;
+  let codexPlusSidebarMenuRepairFrame = 0;
+  let codexPlusSidebarMenuLastPosition = "";
+  let codexPlusSidebarMenuAnchor = null;
+  let codexPlusSidebarMenuRail = null;
+  window.__codexPlusSidebarMenuCleanup?.();
 
   function setCodexPlusTriggerLabel(trigger) {
     if (!trigger) return;
@@ -2369,7 +2404,11 @@
       label.dataset.codexPlusTriggerLabel = "true";
       trigger.appendChild(label);
     }
-    label.textContent = `${codexPlusDisplayName} ${codexPlusVersion}`;
+    const fullLabel = `${codexPlusDisplayName} ${codexPlusVersion}`;
+    const text = trigger.classList.contains("codex-plus-sidebar-trigger") ? codexPlusVersion : fullLabel;
+    if (label.textContent !== text) label.textContent = text;
+    trigger.setAttribute("aria-label", fullLabel);
+    trigger.setAttribute("title", fullLabel);
   }
 
   function ensureCodexPlusTriggerIndicator(trigger) {
@@ -2395,75 +2434,103 @@
     return composer.parentElement?.parentElement?.parentElement?.parentElement || null;
   }
 
-  function codexPlusComposerAnchor() {
-    const composer = document.querySelector("[data-codex-composer]");
-    if (!composer) return null;
-    let node = composer;
-    for (let depth = 0; node instanceof HTMLElement && depth < 9; depth += 1, node = node.parentElement) {
-      const className = String(node.className || "");
-      if (className.includes("ComposerLayoutBody")) return node;
+  function codexPlusSidebarAnchor() {
+    const visible = (node) => {
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const rail = document.querySelector('[data-app-navigation-rail="true"]');
+    if (rail) {
+      if (!visible(rail)) return null;
+      const railRect = rail.getBoundingClientRect();
+      const anchor = Array.from(rail.children).reverse().find((node) => {
+        if (!(node instanceof HTMLElement) || !visible(node)) return false;
+        const rect = node.getBoundingClientRect();
+        return rect.top >= railRect.top + railRect.height / 2
+          && rect.bottom <= railRect.bottom + 4
+          && rect.height <= railRect.height / 2
+          && !!node.querySelector("button, [role='button']");
+      });
+      return anchor ? { rail, anchor } : null;
     }
-    return composer.parentElement?.parentElement?.parentElement?.parentElement || null;
+    const sidebar = document.querySelector("#app-shell-sidebar, aside, nav[role='navigation']");
+    if (!sidebar || !visible(sidebar)) return null;
+    const sidebarRect = sidebar.getBoundingClientRect();
+    const controls = Array.from(sidebar.querySelectorAll("button, [role='button']")).filter((button) => {
+      if (!visible(button)) return false;
+      const labels = [button.getAttribute("aria-label"), button.getAttribute("title")];
+      const rect = button.getBoundingClientRect();
+      return labels.some((label) => /^(设置|打开设置|Settings|Open settings|有可用更新|Update available|Download update|打开个人资料菜单|Open profile menu)$/i.test(String(label || "").trim()))
+        && rect.top >= sidebarRect.top + sidebarRect.height / 2;
+    });
+    controls.sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top);
+    return controls.length ? { rail: sidebar, anchor: controls[0] } : null;
   }
 
-  function scheduleCodexPlusComposerMenuRepair() {
-    if (codexPlusComposerMenuRepairFrame) return;
-    codexPlusComposerMenuRepairFrame = requestAnimationFrame(() => {
-      codexPlusComposerMenuRepairFrame = 0;
-      installCodexPlusComposerMenu();
+  function scheduleCodexPlusSidebarMenuRepair() {
+    if (codexPlusSidebarMenuRepairFrame) return;
+    codexPlusSidebarMenuRepairFrame = requestAnimationFrame(() => {
+      codexPlusSidebarMenuRepairFrame = 0;
+      installCodexPlusSidebarMenu();
     });
   }
 
-  function positionCodexPlusComposerMenu() {
+  function positionCodexPlusSidebarMenu() {
     const menu = document.getElementById(codexPlusMenuId);
-    const anchor = codexPlusComposerAnchor();
-    if (!menu || !anchor) return;
+    if (!menu) return;
+    const resolved = codexPlusSidebarAnchor();
+    if (!resolved) {
+      menu.hidden = true;
+      return;
+    }
+    menu.hidden = false;
+    const { anchor } = resolved;
     const anchorRect = anchor.getBoundingClientRect();
-    if (anchorRect.width <= 0 || anchorRect.height <= 0) return;
-    const menuHeight = 28;
+    const menuRect = menu.getBoundingClientRect();
+    const menuHeight = menuRect.height || 44;
+    const menuWidth = menuRect.width || 36;
     const viewportPadding = 4;
-    const preferredTop = anchorRect.bottom + 5;
-    const clampedTop = Math.max(
+    const top = Math.max(
       viewportPadding,
-      Math.min(preferredTop, window.innerHeight - menuHeight - viewportPadding),
+      Math.min(anchorRect.top - menuHeight - 7, window.innerHeight - menuHeight - viewportPadding),
     );
-    const position = `${Math.round(anchorRect.left + anchorRect.width / 2)}:${Math.round(clampedTop)}:${clampedTop !== preferredTop}`;
-    if (position === codexPlusComposerMenuLastPosition) return;
-    codexPlusComposerMenuLastPosition = position;
-    menu.style.setProperty("--codex-plus-composer-menu-left", `${anchorRect.left + anchorRect.width / 2}px`);
-    menu.style.setProperty("--codex-plus-composer-menu-top", `${clampedTop}px`);
-    menu.dataset.codexPlusMenuClamped = String(clampedTop !== preferredTop);
+    const left = Math.max(
+      viewportPadding,
+      Math.min(anchorRect.left + (anchorRect.width - menuWidth) / 2, window.innerWidth - menuWidth - viewportPadding),
+    );
+    const position = `${left}:${top}`;
+    if (position === codexPlusSidebarMenuLastPosition) return;
+    codexPlusSidebarMenuLastPosition = position;
+    menu.style.setProperty("--codex-plus-sidebar-menu-left", `${left}px`);
+    menu.style.setProperty("--codex-plus-sidebar-menu-top", `${top}px`);
   }
 
-  function scheduleCodexPlusComposerMenuPosition() {
-    if (codexPlusComposerMenuPositionFrame) return;
-    codexPlusComposerMenuPositionFrame = requestAnimationFrame(() => {
-      codexPlusComposerMenuPositionFrame = 0;
-      positionCodexPlusComposerMenu();
-    });
-  }
-
-  function installCodexPlusComposerMenuObserver() {
-    if (codexPlusComposerMenuObserver || !document.body) return;
-    codexPlusComposerMenuObserver = new MutationObserver((mutations) => {
-      const menu = document.getElementById(codexPlusMenuId);
-      const anchor = codexPlusComposerAnchor();
-    const relevant = mutations.some((mutation) => {
-      const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
-        if (target?.closest?.("[data-codex-composer], #codex-plus-menu")) return true;
+  function installCodexPlusSidebarMenuObserver() {
+    if (codexPlusSidebarMenuObserver || !document.body) return;
+    const rootSelector = '[data-app-navigation-rail="true"], #app-shell-sidebar, aside, nav[role="navigation"]';
+    codexPlusSidebarMenuObserver = new MutationObserver((mutations) => {
+      const relevant = mutations.some((mutation) => {
+        const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        if (target?.closest?.(`#${codexPlusMenuId}`)) return false;
+        const sidebar = codexPlusSidebarMenuRail || document.querySelector(rootSelector);
+        if (sidebar?.contains(target)) return true;
         return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
           if (!(node instanceof Element)) return false;
-          return node.matches?.("[data-codex-composer], #codex-plus-menu")
-            || !!node.querySelector?.("[data-codex-composer], #codex-plus-menu");
+          return node.id === codexPlusMenuId || node.matches(rootSelector) || !!node.querySelector(rootSelector);
         });
       });
-      if (!relevant) return;
-      if (anchor && menu?.parentElement === document.body) scheduleCodexPlusComposerMenuPosition();
-      else scheduleCodexPlusComposerMenuRepair();
+      if (relevant) scheduleCodexPlusSidebarMenuRepair();
     });
-    codexPlusComposerMenuObserver.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("resize", scheduleCodexPlusComposerMenuPosition, { passive: true });
-    window.addEventListener("scroll", scheduleCodexPlusComposerMenuPosition, { passive: true, capture: true });
+    codexPlusSidebarMenuObserver.observe(document.body, { childList: true, subtree: true });
+    codexPlusSidebarMenuResizeObserver = new ResizeObserver(scheduleCodexPlusSidebarMenuRepair);
+    window.addEventListener("resize", scheduleCodexPlusSidebarMenuRepair, { passive: true });
+    window.__codexPlusSidebarMenuCleanup = () => {
+      codexPlusSidebarMenuObserver?.disconnect();
+      codexPlusSidebarMenuResizeObserver?.disconnect();
+      cancelAnimationFrame(codexPlusSidebarMenuRepairFrame);
+      window.removeEventListener("resize", scheduleCodexPlusSidebarMenuRepair);
+    };
   }
 
   function codexPlusComposerWorkStatus() {
@@ -2472,6 +2539,7 @@
     const buttons = Array.from(footer.querySelectorAll("button, [role='button']"));
     const visible = (button) => !button.hidden
       && button.getAttribute("aria-hidden") !== "true"
+      && button.getClientRects().length > 0
       && getComputedStyle(button).visibility !== "hidden";
     const buttonLabel = (button) => String(
       button.getAttribute("aria-label")
@@ -2489,11 +2557,10 @@
     if (hasStopButton || hasBusyControl) return "working";
     const alert = footer.querySelector('[role="alert"], [data-status="error"], .text-error, .text-danger');
     if (alert && visible(alert)) return "failed";
-    const hasReadySendButton = buttons.some((button) => visible(button)
+    const hasSendButton = buttons.some((button) => visible(button)
       && /^(发送|send|提交|submit)$/i.test(buttonLabel(button))
-      && !button.disabled
       && button.getAttribute("aria-busy") !== "true");
-    return hasReadySendButton ? "idle" : "unknown";
+    return hasSendButton ? "idle" : "unknown";
   }
 
   function codexPlusEffectiveStatus() {
@@ -2515,6 +2582,8 @@
         window.setTimeout(() => {
           if (line.dataset.status === "idle") line.dataset.completion = "false";
         }, 500);
+      } else if (status !== "idle") {
+        line.dataset.completion = "false";
       }
       line.title = status === "working" ? "Codex 正在工作" : status === "waiting" ? "正在等待 Codex 响应" : status === "checking" ? "正在检查 CodexGO" : status === "failed" ? "CodexGO 或后端异常" : "CodexGO 已就绪";
     });
@@ -2560,10 +2629,13 @@
     }, true);
     const observe = () => {
       const footer = codexPlusComposerFooter();
-      if (!footer) return;
+      if (footer === codexPlusWorkStateFooter) return;
       if (codexPlusWorkStateObserver) codexPlusWorkStateObserver.disconnect();
+      codexPlusWorkStateFooter = footer;
+      if (!footer) return;
       codexPlusWorkStateObserver = new MutationObserver(scheduleCodexPlusWorkStateRefresh);
-      codexPlusWorkStateObserver.observe(footer, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-label", "disabled", "data-state", "hidden"] });
+      codexPlusWorkStateObserver.observe(footer, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-label", "aria-busy", "aria-hidden", "disabled", "data-state", "data-loading", "data-generating", "hidden"] });
+      scheduleCodexPlusWorkStateRefresh();
     };
     observe();
     window.setInterval(observe, 1000);
@@ -2576,9 +2648,7 @@
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
         node.textContent = `${codexPlusDisplayName} ${codexPlusVersion}`;
       });
-      document.querySelectorAll("[data-codex-plus-trigger-label]").forEach((node) => {
-        node.textContent = `${codexPlusDisplayName} ${codexPlusVersion}`;
-      });
+      document.querySelectorAll("[data-codex-plus-trigger-label]").forEach((node) => setCodexPlusTriggerLabel(node.closest("button")));
       document.querySelectorAll(`#${codexPlusMenuId} button`).forEach(setCodexPlusTriggerLabel);
     }
     const label = document.querySelector("[data-codex-backend-status]");
@@ -2596,27 +2666,20 @@
     refreshCodexServiceTierControls();
   }
 
-  function setCodexPlusComposerTriggerLabel(trigger) {
-    if (!trigger) return;
-    const label = trigger.querySelector("[data-codex-plus-trigger-label]");
-    if (label) label.textContent = `${codexPlusDisplayName} ${codexPlusVersion}`;
-  }
-
-  function installCodexPlusComposerMenu() {
-    installCodexPlusComposerMenuObserver();
+  function installCodexPlusSidebarMenu() {
+    installCodexPlusSidebarMenuObserver();
     const existing = document.getElementById(codexPlusMenuId);
-    document.querySelectorAll("button").forEach((button) => {
-      if ((button.textContent || "").trim() === `${codexPlusDisplayName} ${codexPlusVersion}` && !button.closest(`#${codexPlusMenuId}`)) button.remove();
-    });
-    const anchor = codexPlusComposerAnchor();
-    if (!anchor) {
-      existing?.remove();
-      renderCodexPlusStatusLine();
-      return;
+    const resolved = codexPlusSidebarAnchor();
+    if (resolved && (codexPlusSidebarMenuAnchor !== resolved.anchor || codexPlusSidebarMenuRail !== resolved.rail)) {
+      codexPlusSidebarMenuResizeObserver?.disconnect();
+      codexPlusSidebarMenuResizeObserver?.observe(resolved.rail);
+      codexPlusSidebarMenuResizeObserver?.observe(resolved.anchor);
+      codexPlusSidebarMenuAnchor = resolved.anchor;
+      codexPlusSidebarMenuRail = resolved.rail;
     }
-    if (existing && existing.parentElement === document.body && existing.dataset.codexPlusMenuVersion === "8") {
-      setCodexPlusComposerTriggerLabel(existing.querySelector("button"));
-      scheduleCodexPlusComposerMenuPosition();
+    if (existing && existing.parentElement === document.body && existing.dataset.codexPlusMenuVersion === "9") {
+      setCodexPlusTriggerLabel(existing.querySelector("button"));
+      positionCodexPlusSidebarMenu();
       renderCodexPlusStatusLine();
       installCodexPlusWorkStateRuntime();
       return;
@@ -2625,14 +2688,16 @@
     document.querySelectorAll(`[data-codex-plus-menu="true"]`).forEach((node) => node.remove());
     const menu = document.createElement("div");
     menu.id = codexPlusMenuId;
-    menu.className = "codex-plus-composer-menu";
+    menu.className = "codex-plus-sidebar-menu";
     menu.dataset.codexPlusMenu = "true";
-    menu.dataset.codexPlusMenuVersion = "8";
+    menu.dataset.codexPlusMenuVersion = "9";
+    menu.hidden = true;
     const trigger = document.createElement("button");
     trigger.type = "button";
-    trigger.className = "codex-plus-composer-trigger";
-    trigger.dataset.codexPlusTriggerInstalled = "6";
-    trigger.innerHTML = `<span class="codex-plus-trigger-label" data-codex-plus-trigger-label>${codexPlusDisplayName} ${codexPlusVersion}</span><span class="codex-plus-status-line" data-codex-plus-status-line="true" data-status="checking"></span>`;
+    trigger.className = "codex-plus-sidebar-trigger";
+    trigger.dataset.codexPlusTriggerInstalled = "7";
+    trigger.innerHTML = '<img class="codex-plus-sidebar-logo" alt="" aria-hidden="true" draggable="false"><span class="codex-plus-trigger-label" data-codex-plus-trigger-label></span><span class="codex-plus-status-line" data-codex-plus-status-line="true" data-status="checking"></span>';
+    trigger.querySelector("img").src = window.__CODEX_PLUS_LOGO__ || "";
     trigger.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -2640,9 +2705,10 @@
     }, true);
     menu.appendChild(trigger);
     document.body.appendChild(menu);
-    positionCodexPlusComposerMenu();
+    codexPlusSidebarMenuLastPosition = "";
+    positionCodexPlusSidebarMenu();
     installCodexPlusWorkStateRuntime();
-    setCodexPlusComposerTriggerLabel(trigger);
+    setCodexPlusTriggerLabel(trigger);
     renderCodexPlusStatusLine();
   }
 
@@ -8836,7 +8902,7 @@
 
   function scanLightweight() {
     installStyle();
-    installCodexPlusComposerMenu();
+    installCodexPlusSidebarMenu();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
     updateThreadScrollHandlers();
@@ -9578,7 +9644,7 @@
         if (group) delete group.dataset.codexActionLayoutStable;
       });
       syncActionGroupsLayout();
-      installCodexPlusComposerMenu();
+      installCodexPlusSidebarMenu();
       runScanStep(refreshConversationTimeline);
       runScanStep(refreshConversationView);
     });

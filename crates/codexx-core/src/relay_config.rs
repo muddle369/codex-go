@@ -1246,6 +1246,10 @@ fn write_codex_live_atomic(
     std::fs::create_dir_all(home)?;
     let config_path = home.join("config.toml");
     let auth_path = home.join("auth.json");
+    let preserved_config_text = config_text
+        .map(|contents| preserve_live_sandbox_settings(home, contents))
+        .transpose()?;
+    let config_text = preserved_config_text.as_deref();
     #[cfg(windows)]
     let guarded_config_text = match config_text {
         Some(config_text) if preserve_computer_use_guard => {
@@ -1301,6 +1305,32 @@ fn write_codex_live_atomic(
     Ok(backup_path)
 }
 
+fn preserve_live_sandbox_settings(home: &Path, config_text: &str) -> anyhow::Result<String> {
+    let mut target = parse_toml_document(config_text)
+        .context("待写入的 TOML config.toml 无效，无法保留本机沙盒设置")?;
+    let live_text = read_optional_text(&home.join("config.toml"))?;
+    let Ok(live) = parse_toml_document(&live_text) else {
+        return Ok(config_text.to_string());
+    };
+    let mut preserved = false;
+    for key in [
+        "sandbox_mode",
+        "approval_policy",
+        "sandbox_workspace_write",
+        "windows",
+    ] {
+        if let Some(value) = live.get(key).filter(|value| !value.is_none()) {
+            merge_toml_item(&mut target[key], value);
+            preserved = true;
+        }
+    }
+    if preserved {
+        Ok(normalize_optional_toml(target))
+    } else {
+        Ok(config_text.to_string())
+    }
+}
+
 fn active_provider_id(doc: &DocumentMut) -> Option<String> {
     doc.get("model_provider")
         .and_then(Item::as_str)
@@ -1339,45 +1369,109 @@ fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
 }
 
 pub fn ensure_windows_sandbox_usable_for_current_user(home: &Path) -> anyhow::Result<bool> {
+    if !cfg!(windows) {
+        return Ok(false);
+    }
     ensure_windows_sandbox_usable_with(home, windows_process_is_elevated())
 }
 
 fn ensure_windows_sandbox_usable_with(home: &Path, process_elevated: bool) -> anyhow::Result<bool> {
-    if process_elevated || windows_elevated_sandbox_setup_present(home) {
-        return Ok(false);
-    }
     let config_path = home.join("config.toml");
-    let existing = match std::fs::read_to_string(&config_path) {
-        Ok(existing) => existing,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
+    let (setup_marker_version, sandbox_users_version) = windows_sandbox_setup_versions(home);
+    let setup_complete = matches!(
+        (setup_marker_version.as_ref(), sandbox_users_version.as_ref()),
+        (Some(marker), Some(users)) if marker == users
+    );
+    let mut config_state = "available";
+    let config = match std::fs::read_to_string(&config_path) {
+        Ok(existing) => parse_toml_document(&existing).map(Some).inspect_err(|_| {
+            config_state = "invalid_toml";
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            config_state = "missing";
+            Ok(None)
+        }
+        Err(error) => {
+            config_state = "read_failed";
+            Err(error.into())
+        }
     };
-    let mut doc = parse_toml_document(&existing)?;
-    let Some(windows) = doc.get_mut("windows").and_then(Item::as_table_mut) else {
-        return Ok(false);
-    };
-    let elevated = windows
-        .get("sandbox")
+    let sandbox_before = config
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .and_then(|doc| doc.get("windows"))
+        .and_then(Item::as_table)
+        .and_then(|windows| windows.get("sandbox"))
         .and_then(Item::as_str)
+        .map(str::to_string);
+    let sandbox_is_elevated = sandbox_before
+        .as_deref()
         .is_some_and(|value| value.eq_ignore_ascii_case("elevated"));
-    if !elevated {
-        return Ok(false);
+    let mut reason = if process_elevated {
+        "process_elevated"
+    } else if setup_complete {
+        "setup_markers_complete"
+    } else if config_state != "available" {
+        config_state
+    } else if sandbox_is_elevated {
+        "incomplete_setup_unelevated_fallback"
+    } else {
+        "sandbox_mode_unchanged"
+    };
+    let result = (|| -> anyhow::Result<bool> {
+        if process_elevated || setup_complete {
+            return Ok(false);
+        }
+        let Some(mut doc) = config? else {
+            return Ok(false);
+        };
+        if !sandbox_is_elevated {
+            return Ok(false);
+        }
+        doc["windows"]["sandbox"] = toml_edit::value("unelevated");
+        crate::settings::atomic_write(&config_path, normalize_optional_toml(doc).as_bytes())?;
+        Ok(true)
+    })();
+    let changed = matches!(&result, Ok(true));
+    if result.is_err() && config_state == "available" {
+        reason = "config_write_failed";
     }
-    windows["sandbox"] = toml_edit::value("unelevated");
-    crate::settings::atomic_write(&config_path, normalize_optional_toml(doc).as_bytes())?;
     let _ = crate::diagnostic_log::append_diagnostic_log(
-        "launcher.windows_sandbox_downgraded",
+        if result.is_ok() {
+            "launcher.windows_sandbox_checked"
+        } else {
+            "launcher.windows_sandbox_check_failed"
+        },
         json!({
             "home": home.to_string_lossy(),
-            "from": "elevated",
-            "to": "unelevated",
-            "reason": "current process is not elevated and sandbox setup is incomplete",
+            "config_path": config_path.to_string_lossy(),
+            "process_elevated": process_elevated,
+            "config_state": config_state,
+            "setup_marker_version": setup_marker_version,
+            "sandbox_users_version": sandbox_users_version,
+            "setup_markers_complete": setup_complete,
+            "sandbox_before": sandbox_before,
+            "sandbox_after": if changed { Some("unelevated") } else { sandbox_before.as_deref() },
+            "changed": changed,
+            "reason": reason,
         }),
     );
-    Ok(true)
+    if changed {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.windows_sandbox_downgraded",
+            json!({
+                "home": home.to_string_lossy(),
+                "from": "elevated",
+                "to": "unelevated",
+                "reason": "current process is not elevated and sandbox setup is incomplete",
+            }),
+        );
+    }
+    result
 }
 
-fn windows_elevated_sandbox_setup_present(home: &Path) -> bool {
+fn windows_sandbox_setup_versions(home: &Path) -> (Option<u64>, Option<u64>) {
     let version = |path: PathBuf| -> Option<u64> {
         let text = std::fs::read_to_string(path).ok()?;
         serde_json::from_str::<Value>(&text)
@@ -1385,13 +1479,10 @@ fn windows_elevated_sandbox_setup_present(home: &Path) -> bool {
             .get("version")?
             .as_u64()
     };
-    match (
+    (
         version(home.join(".sandbox").join("setup_marker.json")),
         version(home.join(".sandbox-secrets").join("sandbox_users.json")),
-    ) {
-        (Some(marker), Some(users)) => marker == users,
-        _ => false,
-    }
+    )
 }
 
 #[cfg(windows)]

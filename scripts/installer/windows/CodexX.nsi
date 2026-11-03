@@ -10,7 +10,7 @@ Name "CodexGO"
 OutFile "${ROOT}\dist\windows\CodexGO-${VERSION}-windows-x64-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\CodexGO"
 InstallDirRegKey HKCU "Software\CodexGO" "InstallDir"
-RequestExecutionLevel admin
+RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 !define MUI_ICON "${ROOT}\apps\codexx-manager\src-tauri\icons\icon.ico"

@@ -1,7 +1,20 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
-use std::process::Command;
+use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+#[cfg(windows)]
+use anyhow::{Context, bail};
+#[cfg(windows)]
+use windows::Win32::Foundation::{
+    APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS,
+};
+#[cfg(windows)]
+use windows::Win32::Storage::Packaging::Appx::{
+    GetPackagePathByFullName, GetPackagesByPackageFamily,
+};
+#[cfg(windows)]
+use windows::core::{PCWSTR, PWSTR};
 
 #[derive(Debug, Clone, Copy)]
 struct AppPackageSpec {
@@ -11,8 +24,25 @@ struct AppPackageSpec {
     priority: u8,
 }
 
-const CODEX_PACKAGE_EXECUTABLES: &[&str] = &["ChatGPT.exe", "Codex.exe", "codex.exe"];
-const STANDALONE_CODEX_EXECUTABLES: &[&str] = &["Codex.exe", "ChatGPT.exe", "codex.exe"];
+const CODEX_PACKAGE_EXECUTABLES: &[&str] = &[
+    "ChatGPT.exe",
+    "Codex.exe",
+    "codex.exe",
+    "ChatGPT (Beta).exe",
+];
+const STANDALONE_CODEX_EXECUTABLES: &[&str] = &[
+    "Codex.exe",
+    "ChatGPT.exe",
+    "codex.exe",
+    "ChatGPT (Beta).exe",
+];
+
+#[cfg(windows)]
+const OPENAI_PACKAGE_FAMILY_NAMES: &[&str] = &[
+    "OpenAI.Codex_2p2nqsd0c76g0",
+    "OpenAI.CodexBeta_2p2nqsd0c76g0",
+    "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0",
+];
 
 const APP_PACKAGE_SPECS: &[AppPackageSpec] = &[
     AppPackageSpec {
@@ -26,6 +56,12 @@ const APP_PACKAGE_SPECS: &[AppPackageSpec] = &[
         app_id: "App",
         executable_names: CODEX_PACKAGE_EXECUTABLES,
         priority: 1,
+    },
+    AppPackageSpec {
+        identity: "OpenAI.ChatGPT-Desktop",
+        app_id: "App",
+        executable_names: CODEX_PACKAGE_EXECUTABLES,
+        priority: 2,
     },
 ];
 
@@ -62,8 +98,8 @@ pub fn find_latest_codex_app_dir_from_roots(roots: &[PathBuf]) -> Option<PathBuf
 pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        find_latest_codex_app_dir_from_roots(&windows_app_package_roots())
-            .or_else(find_latest_codex_app_dir_from_appx_package)
+        find_latest_codex_app_dir_from_appx_package()
+            .or_else(|| find_latest_codex_app_dir_from_roots(&windows_app_package_roots()))
     }
 
     #[cfg(not(windows))]
@@ -74,21 +110,116 @@ pub fn find_latest_codex_app_dir_default() -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn find_latest_codex_app_dir_from_appx_package() -> Option<PathBuf> {
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "$names=@('OpenAI.Codex','OpenAI.CodexBeta'); Get-AppxPackage | Where-Object { $names -contains $_.Name } | Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    registered_windows_packages()
+        .ok()?
+        .into_iter()
+        .filter(|package| is_supported_windows_app_package_name(&package.full_name))
+        .filter_map(|package| normalize_codex_app_path(&package.install_location))
+        .max_by(compare_app_dir_candidates)
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredWindowsPackage {
+    full_name: String,
+    install_location: PathBuf,
+}
+
+#[cfg(windows)]
+fn registered_windows_packages() -> anyhow::Result<Vec<RegisteredWindowsPackage>> {
+    let mut packages = Vec::new();
+    for family_name in OPENAI_PACKAGE_FAMILY_NAMES {
+        for full_name in package_full_names_for_family(family_name)? {
+            let install_location = package_path_by_full_name(&full_name)
+                .with_context(|| format!("failed to resolve registered package {full_name}"))?;
+            packages.push(RegisteredWindowsPackage {
+                full_name,
+                install_location,
+            });
+        }
     }
-    latest_appx_install_location_from_output(&String::from_utf8_lossy(&output.stdout))
-        .and_then(|location| normalize_codex_app_path(Path::new(&location)))
+    Ok(packages)
+}
+
+#[cfg(windows)]
+fn package_full_names_for_family(family_name: &str) -> anyhow::Result<Vec<String>> {
+    let family = family_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut count = 0u32;
+    let mut buffer_length = 0u32;
+    let first = unsafe {
+        GetPackagesByPackageFamily(
+            PCWSTR(family.as_ptr()),
+            &mut count,
+            None,
+            &mut buffer_length,
+            PWSTR(std::ptr::null_mut()),
+        )
+    };
+    if first == APPMODEL_ERROR_NO_PACKAGE || (first == ERROR_SUCCESS && count == 0) {
+        return Ok(Vec::new());
+    }
+    if first != ERROR_INSUFFICIENT_BUFFER {
+        bail!("GetPackagesByPackageFamily failed with {}", first.0);
+    }
+
+    let mut pointers = vec![PWSTR(std::ptr::null_mut()); count as usize];
+    let mut buffer = vec![0u16; buffer_length as usize];
+    let status = unsafe {
+        GetPackagesByPackageFamily(
+            PCWSTR(family.as_ptr()),
+            &mut count,
+            Some(pointers.as_mut_ptr()),
+            &mut buffer_length,
+            PWSTR(buffer.as_mut_ptr()),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        bail!("GetPackagesByPackageFamily failed with {}", status.0);
+    }
+    buffer.truncate(buffer_length as usize);
+    buffer
+        .split(|value| *value == 0)
+        .filter(|value| !value.is_empty())
+        .map(|value| String::from_utf16(value).context("invalid package full name"))
+        .collect()
+}
+
+#[cfg(windows)]
+fn package_path_by_full_name(full_name: &str) -> anyhow::Result<PathBuf> {
+    let full_name = full_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut path_length = 0u32;
+    let first = unsafe {
+        GetPackagePathByFullName(
+            PCWSTR(full_name.as_ptr()),
+            &mut path_length,
+            PWSTR(std::ptr::null_mut()),
+        )
+    };
+    if first != ERROR_INSUFFICIENT_BUFFER {
+        bail!("GetPackagePathByFullName failed with {}", first.0);
+    }
+    let mut path = vec![0u16; path_length as usize];
+    let status = unsafe {
+        GetPackagePathByFullName(
+            PCWSTR(full_name.as_ptr()),
+            &mut path_length,
+            PWSTR(path.as_mut_ptr()),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        bail!("GetPackagePathByFullName failed with {}", status.0);
+    }
+    let end = path
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(path.len());
+    Ok(PathBuf::from(OsString::from_wide(&path[..end])))
 }
 
 pub fn latest_appx_install_location_from_output(output: &str) -> Option<String> {
@@ -377,7 +508,9 @@ pub(crate) fn is_supported_windows_app_package_name(package_name: &str) -> bool 
 }
 
 pub(crate) fn is_supported_app_executable_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("Codex.exe") || name.eq_ignore_ascii_case("ChatGPT.exe")
+    name.eq_ignore_ascii_case("Codex.exe")
+        || name.eq_ignore_ascii_case("ChatGPT.exe")
+        || name.eq_ignore_ascii_case("ChatGPT (Beta).exe")
 }
 
 fn package_spec_from_path(path: &Path) -> Option<AppPackageSpec> {
